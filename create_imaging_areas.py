@@ -84,7 +84,7 @@ if st.button("Generate KMZ"):
             )
             poly.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
 
-        kmz_path = "sso_polygons_dynamic.kmz"
+        kmz_path = "polygons.kmz"
         kml.savekmz(kmz_path)
 
         # Allow download
@@ -95,4 +95,5 @@ if st.button("Generate KMZ"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
 
