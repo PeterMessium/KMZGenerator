@@ -25,7 +25,7 @@ if st.button("Generate KMZ"):
             centroids.append((float(lat_str), float(lon_str)))
 
         # Orbit angle
-        orbit_angle = -13.5 if direction == "NE->SW" else 13.5
+        orbit_angle = -12.75 if direction == "NE->SW" else 12.75
 
         kml = simplekml.Kml()
 
@@ -65,6 +65,7 @@ if st.button("Generate KMZ"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
 
 
 
