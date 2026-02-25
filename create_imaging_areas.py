@@ -6,7 +6,7 @@ import math
 
 # --- Inputs ---
 centroids = [
-    ()
+    (51.5010, -0.1420)
 ]
 length_km = 70.0  # along satellite ground track (north-south)
 width_km = 20.0   # perpendicular (east-west)
@@ -64,3 +64,4 @@ for lat, lon in centroids:
 # Save KMZ
 kml.savekmz("sso_polygons_vertical.kmz")
 print("Saved as sso_polygons_vertical.kmz")
+
