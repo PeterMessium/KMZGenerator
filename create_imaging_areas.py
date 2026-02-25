@@ -11,7 +11,7 @@ st.title("SSO KMZ Generator")
 st.markdown("""
 Enter centroids (latitude, longitude) separated by commas, one per line.
 """)
-centroids_input = st.text_area("Centroids (lat, lon)", "0.00,0.00")
+centroids_input = st.text_area("Centroids (lat, lon)", "51.501758,-0.136343\n48.856613,2.352222")
 
 length_km = st.number_input("Length along satellite track (km)", min_value=1.0, value=70.0)
 width_km = st.number_input("Width perpendicular to track (km)", min_value=1.0, value=20.0)
@@ -95,3 +95,4 @@ if st.button("Generate KMZ"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
