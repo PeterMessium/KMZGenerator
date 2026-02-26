@@ -1,12 +1,14 @@
 import streamlit as st
 import geopandas as gpd
 import simplekml
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, box
 from shapely.affinity import rotate, translate
+from shapely.ops import unary_union
 from pyproj import Transformer
 import math
 import zipfile
 import os
+import pandas as pd
 
 # ----------------------------
 # App config
@@ -17,7 +19,11 @@ st.title("Operations Team Tooling")
 # ----------------------------
 # Tabs
 # ----------------------------
-tab1, tab2 = st.tabs(["Imaging Polygon Generator", "Shapefile → KMZ Converter"])
+tab1, tab2, tab3 = st.tabs([
+    "Imaging Polygon Generator",
+    "Shapefile → KMZ Converter",
+    "OpenCosmos Tasking AOI Generator"
+])
 
 # ----------------------------
 # Tab 1: Imaging Polygon Generator
@@ -108,7 +114,7 @@ with tab1:
     # ----------------------------
     # Generate KMZ
     # ----------------------------
-    if st.button("Generate KMZ"):
+    if st.button("Generate KMZ", key="tab1_generate"):
         try:
             centroids = generate_centroids()
             kml = simplekml.Kml()
@@ -201,3 +207,86 @@ with tab2:
 
             except Exception as e:
                 st.error(f"Error converting shapefile: {e}")
+
+# ----------------------------
+# Tab 3: OC Tasking AOI Generator
+# ----------------------------
+with tab3:
+    st.subheader("OpenCosmos Tasking AOI Generator")
+    st.markdown("""
+    **Instructions:**  
+    Upload a CSV file with the following requirements:
+    - Must have headers: `Name`, `Lat`, `Long`  
+    - Latitude (`Lat`) and Longitude (`Long`) in decimal degrees  
+    - Example:  
+      ```
+      Name,Lat,Long
+      Farm1,52.123,-1.234
+      Farm2,51.987,-1.567
+      ```
+    """)
+
+    uploaded_csv = st.file_uploader("Upload CSV", type=["csv"], key="tab3_csv")
+    
+    if uploaded_csv:
+        try:
+            df = pd.read_csv(uploaded_csv)
+            
+            # Validate headers
+            required_cols = {"Name", "Lat", "Long"}
+            if not required_cols.issubset(df.columns):
+                st.error(f"CSV must contain headers: {', '.join(required_cols)}")
+            else:
+                st.success(f"CSV loaded successfully with {len(df)} rows.")
+                
+                if st.button("Generate KMZ", key="tab3_generate"):
+                    try:
+                        # Convert to GeoDataFrame
+                        gdf = gpd.GeoDataFrame(
+                            df,
+                            geometry=gpd.points_from_xy(df.Long, df.Lat),
+                            crs="EPSG:4326"
+                        )
+
+                        # Determine UTM zone
+                        mean_lon = gdf.geometry.x.mean()
+                        utm_zone = int((mean_lon + 180) / 6) + 1
+                        utm_crs = f"+proj=utm +zone={utm_zone} +datum=WGS84 +units=m +no_defs"
+                        gdf_utm = gdf.to_crs(utm_crs)
+
+                        # Create 9x9 km squares (4.5 km half-size)
+                        half_size = 4500  # meters
+                        polygons = [
+                            box(pt.x - half_size, pt.y - half_size,
+                                pt.x + half_size, pt.y + half_size)
+                            for pt in gdf_utm.geometry
+                        ]
+                        gdf_polys = gpd.GeoDataFrame(geometry=polygons, crs=utm_crs)
+
+                        # Merge overlapping polygons
+                        merged = unary_union(gdf_polys.geometry)
+                        if merged.geom_type == "Polygon":
+                            merged_polys = gpd.GeoDataFrame(geometry=[merged], crs=utm_crs)
+                        else:
+                            merged_polys = gpd.GeoDataFrame(geometry=list(merged.geoms), crs=utm_crs)
+
+                        # Reproject back to WGS84
+                        merged_polys = merged_polys.to_crs("EPSG:4326")
+
+                        # Create KMZ
+                        kml = simplekml.Kml()
+                        for i, geom in enumerate(merged_polys.geometry):
+                            coords = list(geom.exterior.coords)
+                            pol = kml.newpolygon(name=f"Merged Area {i+1}", outerboundaryis=coords)
+                            pol.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
+
+                        kmz_path = "farm_polygons_merged.kmz"
+                        kml.savekmz(kmz_path)
+                        with open(kmz_path, "rb") as f:
+                            st.download_button("Download KMZ", f, file_name=kmz_path)
+                        st.success("KMZ file generated successfully!")
+                    
+                    except Exception as e:
+                        st.error(f"Error generating KMZ: {e}")
+        except Exception as e:
+            st.error(f"Error reading CSV: {e}")
