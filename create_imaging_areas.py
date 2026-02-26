@@ -34,6 +34,10 @@ COUNTRY_CENTROIDS = {
     "Austria": (47.6, 14.1),
     "Czech Republic": (49.8, 15.5),
     "Netherlands": (52.2, 5.3),
+    "Australia": (-25.0, 133.0),
+    "New Zealand": (-41.0, 174.0),
+    "Canada": (56.0, -106.0),
+    "United States": (39.8, -98.6),
 }
 
 # ----------------------------
@@ -205,3 +209,4 @@ if st.button("Generate KMZ"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
