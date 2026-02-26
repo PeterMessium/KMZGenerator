@@ -8,7 +8,7 @@ import math
 # ----------------------------
 # App config
 # ----------------------------
-st.title("KMZ Generator")
+st.title("Imaging Polygon Generator")
 
 MODE_COUNTRY = "Generate batch of polygons"
 MODE_MANUAL = "Coordinates-based input"
@@ -209,4 +209,5 @@ if st.button("Generate KMZ"):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
 
