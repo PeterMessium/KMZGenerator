@@ -1,6 +1,7 @@
 streamlit
 simplekml
 shapely
-
 pyproj
 geopandas
+folium
+streamlit_folium
