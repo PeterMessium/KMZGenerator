@@ -138,75 +138,206 @@ with tab1:
             st.error(f"Error: {e}")
 
 # ----------------------------
-# Tab 2: Shapefile → KMZ Converter
+# Tab 2: Shapefile → KMZ Converter (Improved)
 # ----------------------------
 with tab2:
-    st.subheader("Upload Shapefile components (.shp, .shx, .dbf, .prj)")
+
+    st.subheader("Upload Shapefile components (.shp, .shx, .dbf, .prj, .cpg)")
 
     uploaded_files = st.file_uploader(
         "Select all shapefile components",
-        type=["shp", "shx", "dbf", "prj"],
-        accept_multiple_files=True
+        type=["shp", "shx", "dbf", "prj", "cpg"],
+        accept_multiple_files=True,
+        key="tab2_upload"
     )
 
+    # ----------------------------
+    # CRS Detection Helper
+    # ----------------------------
+
+    def guess_crs(gdf):
+
+        candidates = [
+            "EPSG:4326",
+            "EPSG:3857",
+            "EPSG:27700",
+            "EPSG:2154",
+            "EPSG:32629",
+            "EPSG:32630",
+            "EPSG:32631",
+            "EPSG:32632",
+            "EPSG:32633",
+        ]
+
+        for crs in candidates:
+            try:
+                test = gdf.set_crs(crs, allow_override=True).to_crs("EPSG:4326")
+                minx, miny, maxx, maxy = test.total_bounds
+
+                if (
+                    -180 <= minx <= 180 and
+                    -90 <= miny <= 90 and
+                    -180 <= maxx <= 180 and
+                    -90 <= maxy <= 90
+                ):
+                    return crs
+            except:
+                continue
+
+        return None
+
+
+    # ----------------------------
+    # KMZ Conversion Helper
+    # ----------------------------
+
+    def gdf_to_kmz(gdf, output_path):
+
+        kml = simplekml.Kml()
+
+        for idx, row in gdf.iterrows():
+
+            geom = row.geometry
+
+            if geom is None or geom.is_empty:
+                continue
+
+            attrs = row.drop(labels="geometry").to_dict()
+            description = "<br>".join([f"<b>{k}</b>: {v}" for k, v in attrs.items()])
+
+            if geom.geom_type == "MultiPolygon":
+                polygons = [p for p in geom.geoms if not p.is_empty]
+
+            elif geom.geom_type == "Polygon":
+                polygons = [geom]
+
+            else:
+                continue
+
+            for poly in polygons:
+
+                kml.newpolygon(
+                    name=str(idx),
+                    description=description,
+                    outerboundaryis=list(poly.exterior.coords),
+                    innerboundaryis=[list(i.coords) for i in poly.interiors]
+                )
+
+        temp_kml = output_path.replace(".kmz", ".kml")
+        kml.save(temp_kml)
+
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as kmz:
+            kmz.write(temp_kml, arcname="doc.kml")
+
+        os.remove(temp_kml)
+
+
     if uploaded_files:
-        shapefile_folder = "temp_shapefile"
-        os.makedirs(shapefile_folder, exist_ok=True)
 
-        for f in uploaded_files:
-            with open(os.path.join(shapefile_folder, f.name), "wb") as out_file:
-                out_file.write(f.getbuffer())
+        with tempfile.TemporaryDirectory() as tmp:
 
-        shp_files = [f for f in uploaded_files if f.name.endswith(".shp")]
-        if len(shp_files) != 1:
-            st.error("Please upload exactly one .shp file.")
-        else:
-            shp_path = os.path.join(shapefile_folder, shp_files[0].name)
-            kmz_output = f"{os.path.splitext(shp_files[0].name)[0]}.kmz"
+            for f in uploaded_files:
+                with open(os.path.join(tmp, f.name), "wb") as out:
+                    out.write(f.getbuffer())
+
+            shp_files = [f for f in uploaded_files if f.name.endswith(".shp")]
+
+            if len(shp_files) != 1:
+                st.error("Please upload exactly one .shp file.")
+                st.stop()
+
+            shp_path = os.path.join(tmp, shp_files[0].name)
 
             try:
                 gdf = gpd.read_file(shp_path)
-                if gdf.crs != "EPSG:4326":
-                    gdf = gdf.to_crs(epsg=4326)
-
-                kml = simplekml.Kml()
-                for idx, row in gdf.iterrows():
-                    geom = row.geometry
-                    attrs = row.drop(labels="geometry").to_dict()
-                    description = "<br>".join([f"<b>{k}</b>: {v}" for k, v in attrs.items()])
-
-                    if isinstance(geom, MultiPolygon):
-                        for poly in geom.geoms:
-                            kml.newpolygon(
-                                name=str(idx),
-                                description=description,
-                                outerboundaryis=list(poly.exterior.coords),
-                                innerboundaryis=[list(interior.coords) for interior in poly.interiors]
-                            )
-                    elif isinstance(geom, Polygon):
-                        kml.newpolygon(
-                            name=str(idx),
-                            description=description,
-                            outerboundaryis=list(geom.exterior.coords),
-                            innerboundaryis=[list(interior.coords) for interior in geom.interiors]
-                        )
-                    else:
-                        st.warning(f"Unsupported geometry type: {geom.geom_type}")
-
-                temp_kml = "temp_shapefile.kml"
-                kml.save(temp_kml)
-                with zipfile.ZipFile(kmz_output, "w", zipfile.ZIP_DEFLATED) as kmz:
-                    kmz.write(temp_kml, arcname="doc.kml")
-                os.remove(temp_kml)
-
-                with open(kmz_output, "rb") as f:
-                    st.download_button("Download KMZ", f, file_name=kmz_output)
-
-                st.success("Shapefile converted to KMZ successfully!")
-
             except Exception as e:
-                st.error(f"Error converting shapefile: {e}")
+                st.error(f"Error reading shapefile: {e}")
+                st.stop()
 
+            # ----------------------------
+            # Handle CRS
+            # ----------------------------
+
+            if gdf.crs is None:
+
+                st.warning("No CRS detected. Attempting automatic detection...")
+
+                guessed = guess_crs(gdf)
+
+                if guessed:
+                    st.success(f"Detected CRS: {guessed}")
+                    gdf = gdf.set_crs(guessed, allow_override=True)
+
+                else:
+                    st.error("Could not automatically determine CRS.")
+
+                    manual_crs = st.text_input(
+                        "Enter CRS manually (example: EPSG:27700)"
+                    )
+
+                    if manual_crs:
+                        try:
+                            gdf = gdf.set_crs(manual_crs, allow_override=True)
+                        except:
+                            st.error("Invalid CRS.")
+                            st.stop()
+                    else:
+                        st.stop()
+
+            # ----------------------------
+            # Convert to WGS84
+            # ----------------------------
+
+            try:
+                gdf = gdf.to_crs("EPSG:4326")
+            except Exception as e:
+                st.error(f"CRS conversion failed: {e}")
+                st.stop()
+
+            # ----------------------------
+            # Preview Map
+            # ----------------------------
+
+            st.subheader("Geometry Preview")
+
+            centroid = gdf.geometry.centroid.iloc[0]
+
+            m = folium.Map(
+                location=[centroid.y, centroid.x],
+                zoom_start=15
+            )
+
+            folium.GeoJson(gdf).add_to(m)
+
+            st_folium(m, width="100%", height=500)
+
+            # ----------------------------
+            # Export KMZ
+            # ----------------------------
+
+            if st.button("Convert to KMZ", key="tab2_convert"):
+
+                kmz_name = os.path.splitext(shp_files[0].name)[0] + ".kmz"
+                kmz_path = os.path.join(tmp, kmz_name)
+
+                try:
+
+                    gdf_to_kmz(gdf, kmz_path)
+
+                    with open(kmz_path, "rb") as f:
+                        st.download_button(
+                            "Download KMZ",
+                            f,
+                            file_name=kmz_name,
+                            mime="application/vnd.google-earth.kmz"
+                        )
+
+                    st.success("Shapefile converted successfully!")
+
+                except Exception as e:
+                    st.error(f"KMZ conversion failed: {e}")
+
+  
 # ----------------------------
 # Tab 3: OC Tasking AOI Generator
 # ----------------------------
@@ -494,3 +625,4 @@ with tab4:
             
             if not output_generated:
                 st.warning("No polygons were selected for export.")
+
