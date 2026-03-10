@@ -23,11 +23,12 @@ st.title("Operations Team Tooling")
 # ----------------------------
 # Tabs
 # ----------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Imaging Polygon Generator",
     "Shapefile → KMZ Converter",
     "OpenCosmos Tasking AOI Generator",
-    "Subsection Generator"
+    "Subsection Generator",
+    "Duplicate KMZs"
 ])
 
 # ----------------------------
@@ -626,3 +627,130 @@ with tab4:
             if not output_generated:
                 st.warning("No polygons were selected for export.")
 
+
+# ----------------------------
+# Tab 5: Duplicate KMZs
+# ----------------------------
+with tab5:
+
+    st.subheader("Duplicate KMZ Polygons")
+
+    uploaded_kmz = st.file_uploader(
+        "Upload KMZ containing ONE polygon",
+        type=["kmz"],
+        key="tab5_upload"
+    )
+
+    duplicates = st.number_input(
+        "Number of duplicates",
+        min_value=1,
+        max_value=200,
+        value=10
+    )
+
+    offset_m = st.number_input(
+        "Offset between polygons (metres)",
+        min_value=1,
+        value=50
+    )
+
+    if uploaded_kmz:
+
+        try:
+
+            # ----------------------------
+            # Extract KMZ
+            # ----------------------------
+            with tempfile.TemporaryDirectory() as tmp:
+
+                kmz_path = os.path.join(tmp, uploaded_kmz.name)
+
+                with open(kmz_path, "wb") as f:
+                    f.write(uploaded_kmz.getbuffer())
+
+                with zipfile.ZipFile(kmz_path, "r") as kmz:
+                    kml_files = [n for n in kmz.namelist() if n.endswith(".kml")]
+                    kmz.extract(kml_files[0], tmp)
+                    kml_path = os.path.join(tmp, kml_files[0])
+
+                gdf = gpd.read_file(kml_path, driver="KML")
+
+            if gdf.empty:
+                st.error("No geometry found.")
+                st.stop()
+
+            geom = gdf.geometry.iloc[0]
+
+            if geom.geom_type != "Polygon":
+                st.error("KMZ must contain a single Polygon.")
+                st.stop()
+
+            # ----------------------------
+            # Convert to UTM
+            # ----------------------------
+            centroid = geom.centroid
+            lon, lat = centroid.x, centroid.y
+
+            utm_zone = int((lon + 180) / 6) + 1
+            epsg = 32600 + utm_zone if lat >= 0 else 32700 + utm_zone
+
+            gdf_utm = gdf.to_crs(epsg)
+
+            base_poly = gdf_utm.geometry.iloc[0]
+
+            # ----------------------------
+            # Generate duplicates
+            # ----------------------------
+            polys = []
+
+            for i in range(duplicates):
+
+                new_poly = translate(
+                    base_poly,
+                    xoff=i * offset_m,
+                    yoff=0
+                )
+
+                polys.append(new_poly)
+
+            dup_gdf = gpd.GeoDataFrame(geometry=polys, crs=f"EPSG:{epsg}")
+
+            dup_gdf = dup_gdf.to_crs("EPSG:4326")
+
+            # ----------------------------
+            # Export KMZ
+            # ----------------------------
+            if st.button("Generate Duplicated KMZ"):
+
+                kml = simplekml.Kml()
+
+                for i, geom in enumerate(dup_gdf.geometry):
+
+                    coords = list(geom.exterior.coords)
+
+                    pol = kml.newpolygon(
+                        name=f"Duplicate {i+1}",
+                        outerboundaryis=coords
+                    )
+
+                    pol.style.polystyle.color = simplekml.Color.changealphaint(
+                        120,
+                        simplekml.Color.green
+                    )
+
+                kmz_out = "duplicated_polygons.kmz"
+
+                kml.savekmz(kmz_out)
+
+                with open(kmz_out, "rb") as f:
+                    st.download_button(
+                        "Download KMZ",
+                        f,
+                        file_name=kmz_out,
+                        mime="application/vnd.google-earth.kmz"
+                    )
+
+                st.success(f"{duplicates} polygons generated successfully.")
+
+        except Exception as e:
+            st.error(f"Error: {e}")
