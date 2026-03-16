@@ -52,6 +52,8 @@ with tab1:
         "Italy": (43.0, 12.5),
         "Austria": (47.6, 14.1),
         "Czech Republic": (49.8, 15.5),
+        "Sweden": (62.0, 15.0),
+        "Denmark": (56.0, 10.0),
         "Netherlands": (52.2, 5.3),
         "Australia": (-25.0, 133.0),
         "New Zealand": (-41.0, 174.0),
