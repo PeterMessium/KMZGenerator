@@ -131,7 +131,7 @@ with tab1:
                 poly = kml.newpolygon(
                     name=f"Polygon {i} @ {lat:.3f},{lon:.3f}", outerboundaryis=coords
                 )
-                poly.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
+                poly.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.black)
             kmz_path = "polygons.kmz"
             kml.savekmz(kmz_path)
             with open(kmz_path, "rb") as f:
