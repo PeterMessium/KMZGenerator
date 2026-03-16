@@ -35,6 +35,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # Tab 1: Imaging Polygon Generator
 # ----------------------------
 with tab1:
+
     MODE_COUNTRY = "Generate batch of polygons"
     MODE_MANUAL = "Coordinates-based input"
 
@@ -63,80 +64,209 @@ with tab1:
 
     if mode == MODE_MANUAL:
         st.markdown("Enter centroids (latitude, longitude), one per line.")
-        centroids_input = st.text_area("Centroids (lat, lon)", "0.00,0.00")
+        centroids_input = st.text_area(
+            "Centroids (lat, lon)",
+            "52.0,0.1"
+        )
     else:
         country = st.selectbox("Country", list(COUNTRY_CENTROIDS.keys()))
-        n_polygons = st.slider("Number of polygons", min_value=0, max_value=50, value=10)
+        n_polygons = st.slider(
+            "Number of centroids",
+            min_value=1,
+            max_value=50,
+            value=10
+        )
 
-    length_km = st.number_input("Length along satellite track (km)", min_value=1.0, value=70.0)
-    width_km = st.number_input("Width perpendicular to track (km)", min_value=1.0, value=20.0)
-    direction = st.selectbox("Orbit direction", ["NE->SW", "SE->NW"])
+    # -------------------------------------------------------
+    # Polygon configuration table
+    # -------------------------------------------------------
 
-    # ----------------------------
+    st.markdown("### Polygon configurations")
+
+    default_configs = pd.DataFrame(
+        [
+            {"width_km": 20, "length_km": 70, "direction": "NE->SW"},
+            {"width_km": 20, "length_km": 70, "direction": "SE->NW"},
+        ]
+    )
+
+    polygon_configs = st.data_editor(
+        default_configs,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "width_km": st.column_config.NumberColumn("Width (km)", min_value=1),
+            "length_km": st.column_config.NumberColumn("Length (km)", min_value=1),
+            "direction": st.column_config.SelectboxColumn(
+                "Direction",
+                options=["NE->SW", "SE->NW"]
+            )
+        }
+    )
+
+    # -------------------------------------------------------
     # Helper functions
-    # ----------------------------
+    # -------------------------------------------------------
+
     def sso_ground_track_angle(lat_deg, inclination_deg=97.8, direction="NE->SW"):
         if abs(lat_deg) > inclination_deg:
             lat_deg = math.copysign(inclination_deg, lat_deg)
+
         lat_rad = math.radians(lat_deg)
         inc_rad = math.radians(inclination_deg)
+
         ratio = math.cos(inc_rad) / math.cos(lat_rad)
         ratio = max(-1.0, min(1.0, ratio))
+
         angle_rad = math.asin(ratio)
         angle_deg = math.degrees(angle_rad)
+
         return angle_deg if direction == "NE->SW" else -angle_deg
 
+
     def build_polygon(lat, lon, length_km, width_km, direction, x_offset_m=0):
+
         orbit_angle = sso_ground_track_angle(lat, direction=direction)
+
         utm_zone = int((lon + 180) / 6) + 1
         is_northern = lat >= 0
+
         epsg = 32600 + utm_zone if is_northern else 32700 + utm_zone
-        to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-        to_ll = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+
+        to_utm = Transformer.from_crs(
+            "EPSG:4326",
+            f"EPSG:{epsg}",
+            always_xy=True
+        )
+
+        to_ll = Transformer.from_crs(
+            f"EPSG:{epsg}",
+            "EPSG:4326",
+            always_xy=True
+        )
+
         x, y = to_utm.transform(lon, lat)
+
         dx = width_km * 1000 / 2
         dy = length_km * 1000 / 2
-        rect = Polygon([(-dx, -dy), (-dx, dy), (dx, dy), (dx, -dy)])
-        rect_rot = rotate(rect, orbit_angle, origin=(0, 0), use_radians=False)
-        rect_final = translate(rect_rot, xoff=x + x_offset_m, yoff=y)
-        return [to_ll.transform(px, py) for px, py in rect_final.exterior.coords]
+
+        rect = Polygon(
+            [(-dx, -dy), (-dx, dy), (dx, dy), (dx, -dy)]
+        )
+
+        rect_rot = rotate(
+            rect,
+            orbit_angle,
+            origin=(0, 0),
+            use_radians=False
+        )
+
+        rect_final = translate(
+            rect_rot,
+            xoff=x + x_offset_m,
+            yoff=y
+        )
+
+        return [
+            to_ll.transform(px, py)
+            for px, py in rect_final.exterior.coords
+        ]
+
 
     def generate_centroids():
+
         centroids = []
+
         if mode == MODE_MANUAL:
+
             for line in centroids_input.splitlines():
+
                 if not line.strip():
                     continue
+
                 lat_str, lon_str = line.split(",")
-                centroids.append((float(lat_str), float(lon_str), 0.0))
+
+                centroids.append(
+                    (float(lat_str), float(lon_str), 0.0)
+                )
+
         else:
+
             base_lat, base_lon = COUNTRY_CENTROIDS[country]
+
             spacing_m = 10_000
+
             for i in range(n_polygons):
+
                 offset_index = (i // 2) + 1
                 sign = -1 if i % 2 == 0 else 1
+
                 x_offset = sign * offset_index * spacing_m
-                centroids.append((base_lat, base_lon, x_offset))
+
+                centroids.append(
+                    (base_lat, base_lon, x_offset)
+                )
+
         return centroids
 
-    # ----------------------------
+    # -------------------------------------------------------
     # Generate KMZ
-    # ----------------------------
+    # -------------------------------------------------------
+
     if st.button("Generate KMZ", key="tab1_generate"):
+
         try:
+
             centroids = generate_centroids()
+
+            if polygon_configs.empty:
+                st.error("Add at least one polygon configuration.")
+                st.stop()
+
             kml = simplekml.Kml()
-            for i, (lat, lon, x_offset) in enumerate(centroids, start=1):
-                coords = build_polygon(lat, lon, length_km, width_km, direction, x_offset)
-                poly = kml.newpolygon(
-                    name=f"Polygon {i} @ {lat:.3f},{lon:.3f}", outerboundaryis=coords
-                )
-                poly.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.black)
+
+            poly_id = 1
+
+            for lat, lon, x_offset in centroids:
+
+                for _, cfg in polygon_configs.iterrows():
+
+                    coords = build_polygon(
+                        lat,
+                        lon,
+                        cfg["length_km"],
+                        cfg["width_km"],
+                        cfg["direction"],
+                        x_offset
+                    )
+
+                    poly = kml.newpolygon(
+                        name=f"{cfg['width_km']}x{cfg['length_km']}km {cfg['direction']} @ {lat:.3f},{lon:.3f}",
+                        outerboundaryis=coords
+                    )
+
+                    poly.style.polystyle.color = simplekml.Color.changealphaint(
+                        100,
+                        simplekml.Color.black
+                    )
+
+                    poly_id += 1
+
             kmz_path = "polygons.kmz"
+
             kml.savekmz(kmz_path)
+
             with open(kmz_path, "rb") as f:
-                st.download_button("Download KMZ", f, file_name=kmz_path)
-            st.success("KMZ generated successfully!")
+                st.download_button(
+                    "Download KMZ",
+                    f,
+                    file_name=kmz_path
+                )
+
+            st.success(
+                f"KMZ generated successfully! ({poly_id-1} polygons)"
+            )
+
         except Exception as e:
             st.error(f"Error: {e}")
 
