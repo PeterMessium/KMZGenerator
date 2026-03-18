@@ -23,12 +23,13 @@ st.title("Operations Team Tooling")
 # ----------------------------
 # Tabs
 # ----------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Imaging Polygon Generator",
     "Shapefile → KMZ Converter",
     "OpenCosmos Tasking AOI Generator",
     "Subsection Generator",
-    "Duplicate KMZs"
+    "Duplicate KMZs",
+    "Polygon Frequency Map"
 ])
 
 # ----------------------------
@@ -64,18 +65,10 @@ with tab1:
 
     if mode == MODE_MANUAL:
         st.markdown("Enter centroids (latitude, longitude), one per line.")
-        centroids_input = st.text_area(
-            "Centroids (lat, lon)",
-            "52.0,0.1"
-        )
+        centroids_input = st.text_area("Centroids (lat, lon)", "52.0,0.1")
     else:
         country = st.selectbox("Country", list(COUNTRY_CENTROIDS.keys()))
-        n_polygons = st.slider(
-            "Number of centroids",
-            min_value=1,
-            max_value=50,
-            value=10
-        )
+        n_polygons = st.slider("Number of centroids", 1, 50, 10)
 
     # -------------------------------------------------------
     # Polygon configuration table
@@ -83,12 +76,25 @@ with tab1:
 
     st.markdown("### Polygon configurations")
 
-    default_configs = pd.DataFrame(
-        [
-            {"width_km": 20, "length_km": 70, "direction": "NE->SW"},
-            {"width_km": 20, "length_km": 70, "direction": "SE->NW"},
-        ]
-    )
+    # Define colour options
+    COLOUR_OPTIONS = {
+        "Blue": "#1f77b4",
+        "Red": "#d62728",
+        "Green": "#2ca02c",
+        "Orange": "#ff7f0e",
+        "Purple": "#9467bd",
+        "Brown": "#8c564b",
+        "Pink": "#e377c2",
+        "Grey": "#7f7f7f",
+        "Cyan": "#17becf",
+        "Yellow": "#bcbd22",
+    }
+
+    # Default table with two example polygons
+    default_configs = pd.DataFrame([
+        {"width_km": 20, "length_km": 70, "direction": "NE->SW", "colour": "Blue"},
+        {"width_km": 20, "length_km": 70, "direction": "SE->NW", "colour": "Red"},
+    ])
 
     polygon_configs = st.data_editor(
         default_configs,
@@ -100,7 +106,11 @@ with tab1:
             "direction": st.column_config.SelectboxColumn(
                 "Direction",
                 options=["NE->SW", "SE->NW"]
-            )
+            ),
+            "colour": st.column_config.SelectboxColumn(
+                "Polygon Colour",
+                options=list(COLOUR_OPTIONS.keys())
+            ),
         }
     )
 
@@ -108,129 +118,72 @@ with tab1:
     # Helper functions
     # -------------------------------------------------------
 
+    def colour_name_to_kml(colour_name, alpha=120):
+        hex_colour = COLOUR_OPTIONS.get(colour_name, "#000000").lstrip("#")
+        r = hex_colour[0:2]
+        g = hex_colour[2:4]
+        b = hex_colour[4:6]
+        return f"{alpha:02x}{b}{g}{r}"
+
     def sso_ground_track_angle(lat_deg, inclination_deg=97.8, direction="NE->SW"):
         if abs(lat_deg) > inclination_deg:
             lat_deg = math.copysign(inclination_deg, lat_deg)
-
         lat_rad = math.radians(lat_deg)
         inc_rad = math.radians(inclination_deg)
-
         ratio = math.cos(inc_rad) / math.cos(lat_rad)
         ratio = max(-1.0, min(1.0, ratio))
-
         angle_rad = math.asin(ratio)
         angle_deg = math.degrees(angle_rad)
-
         return angle_deg if direction == "NE->SW" else -angle_deg
 
-
     def build_polygon(lat, lon, length_km, width_km, direction, x_offset_m=0):
-
         orbit_angle = sso_ground_track_angle(lat, direction=direction)
-
         utm_zone = int((lon + 180) / 6) + 1
         is_northern = lat >= 0
-
         epsg = 32600 + utm_zone if is_northern else 32700 + utm_zone
-
-        to_utm = Transformer.from_crs(
-            "EPSG:4326",
-            f"EPSG:{epsg}",
-            always_xy=True
-        )
-
-        to_ll = Transformer.from_crs(
-            f"EPSG:{epsg}",
-            "EPSG:4326",
-            always_xy=True
-        )
-
+        to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+        to_ll = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
         x, y = to_utm.transform(lon, lat)
-
         dx = width_km * 1000 / 2
         dy = length_km * 1000 / 2
-
-        rect = Polygon(
-            [(-dx, -dy), (-dx, dy), (dx, dy), (dx, -dy)]
-        )
-
-        rect_rot = rotate(
-            rect,
-            orbit_angle,
-            origin=(0, 0),
-            use_radians=False
-        )
-
-        rect_final = translate(
-            rect_rot,
-            xoff=x + x_offset_m,
-            yoff=y
-        )
-
-        return [
-            to_ll.transform(px, py)
-            for px, py in rect_final.exterior.coords
-        ]
-
+        rect = Polygon([(-dx, -dy), (-dx, dy), (dx, dy), (dx, -dy)])
+        rect_rot = rotate(rect, orbit_angle, origin=(0, 0), use_radians=False)
+        rect_final = translate(rect_rot, xoff=x + x_offset_m, yoff=y)
+        return [to_ll.transform(px, py) for px, py in rect_final.exterior.coords]
 
     def generate_centroids():
-
         centroids = []
-
         if mode == MODE_MANUAL:
-
             for line in centroids_input.splitlines():
-
                 if not line.strip():
                     continue
-
                 lat_str, lon_str = line.split(",")
-
-                centroids.append(
-                    (float(lat_str), float(lon_str), 0.0)
-                )
-
+                centroids.append((float(lat_str), float(lon_str), 0.0))
         else:
-
             base_lat, base_lon = COUNTRY_CENTROIDS[country]
-
-            spacing_m = 10_000
-
+            spacing_m = 10000
             for i in range(n_polygons):
-
                 offset_index = (i // 2) + 1
                 sign = -1 if i % 2 == 0 else 1
-
                 x_offset = sign * offset_index * spacing_m
-
-                centroids.append(
-                    (base_lat, base_lon, x_offset)
-                )
-
+                centroids.append((base_lat, base_lon, x_offset))
         return centroids
 
     # -------------------------------------------------------
     # Generate KMZ
     # -------------------------------------------------------
-
     if st.button("Generate KMZ", key="tab1_generate"):
-
         try:
-
             centroids = generate_centroids()
-
             if polygon_configs.empty:
                 st.error("Add at least one polygon configuration.")
                 st.stop()
 
             kml = simplekml.Kml()
-
-            poly_id = 1
+            poly_count = 0
 
             for lat, lon, x_offset in centroids:
-
                 for _, cfg in polygon_configs.iterrows():
-
                     coords = build_polygon(
                         lat,
                         lon,
@@ -239,33 +192,21 @@ with tab1:
                         cfg["direction"],
                         x_offset
                     )
-
                     poly = kml.newpolygon(
                         name=f"{cfg['width_km']}x{cfg['length_km']}km {cfg['direction']} @ {lat:.3f},{lon:.3f}",
                         outerboundaryis=coords
                     )
-
-                    poly.style.polystyle.color = simplekml.Color.changealphaint(
-                        100,
-                        simplekml.Color.black
-                    )
-
-                    poly_id += 1
+                    poly.style.polystyle.color = colour_name_to_kml(cfg["colour"])
+                    poly.style.linestyle.color = colour_name_to_kml(cfg["colour"], 255)
+                    poly_count += 1
 
             kmz_path = "polygons.kmz"
-
             kml.savekmz(kmz_path)
 
             with open(kmz_path, "rb") as f:
-                st.download_button(
-                    "Download KMZ",
-                    f,
-                    file_name=kmz_path
-                )
+                st.download_button("Download KMZ", f, file_name=kmz_path)
 
-            st.success(
-                f"KMZ generated successfully! ({poly_id-1} polygons)"
-            )
+            st.success(f"KMZ generated successfully! ({poly_count} polygons)")
 
         except Exception as e:
             st.error(f"Error: {e}")
@@ -886,3 +827,102 @@ with tab5:
 
         except Exception as e:
             st.error(f"Error: {e}")
+
+
+
+with tab6:
+    st.subheader("Visualise Polygon Image Frequency with Layers and Scaled Colours")
+
+    try:
+        # Load CSV from local folder
+        csv_path = "polygon_frequency.csv"
+        df = pd.read_csv(csv_path)
+
+        required_cols = {"Polygon", "Num of Images", "Geometry"}
+        if not required_cols.issubset(df.columns):
+            st.error(f"CSV must contain columns: {', '.join(required_cols)}")
+        else:
+            st.success(f"CSV loaded successfully with {len(df)} polygons.")
+
+            import shapely.wkt
+            import branca.colormap as cm
+
+            # Convert WKT to shapely geometries
+            df["geometry"] = df["Geometry"].apply(shapely.wkt.loads)
+            gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
+
+            # Compute mean lat/lon for map center
+            centroids = gdf.geometry.centroid
+            mean_lat = centroids.y.mean()
+            mean_lon = centroids.x.mean()
+
+            # Determine max number of images for scaling
+            max_images = gdf["Num of Images"].max()
+
+            # Linear colour scale from red (0) → yellow → green (max)
+            colormap = cm.LinearColormap(["red", "yellow", "green"], vmin=0, vmax=max_images)
+            colormap.caption = "Number of Images"
+
+            # Initialise folium map
+            m = folium.Map(location=[mean_lat, mean_lon], zoom_start=6)
+
+            # Define the four layer groups
+            layers = {
+                "Core NE->SW": folium.FeatureGroup(name="Core NE->SW", show=True),
+                "Core SE->NW": folium.FeatureGroup(name="Core SE->NW", show=True),
+                "Expanded NE->SW": folium.FeatureGroup(name="Expanded NE->SW", show=True),
+                "Expanded SE->NW": folium.FeatureGroup(name="Expanded SE->NW", show=True)
+            }
+
+            # Add polygons to the correct layer
+            for _, row in gdf.iterrows():
+                geom = row.geometry
+                polygons = [geom] if geom.geom_type == "Polygon" else geom.geoms
+
+                # Robust layer classification: Expanded takes priority over Core
+                if "Expanded" in row["Polygon"]:
+                    if "NE->SW" in row["Polygon"]:
+                        layer_name = "Expanded NE->SW"
+                    elif "SE->NW" in row["Polygon"]:
+                        layer_name = "Expanded SE->NW"
+                    else:
+                        layer_name = None
+                elif "Core" in row["Polygon"]:
+                    if "NE->SW" in row["Polygon"]:
+                        layer_name = "Core NE->SW"
+                    elif "SE->NW" in row["Polygon"]:
+                        layer_name = "Core SE->NW"
+                    else:
+                        layer_name = None
+                else:
+                    layer_name = None  # skip polygons that don't match any category
+
+                if layer_name is None:
+                    continue
+
+                for poly in polygons:
+                    coords = [[y, x] for x, y, *rest in poly.exterior.coords]  # ignore Z
+                    folium.Polygon(
+                        locations=coords,
+                        color=colormap(row["Num of Images"]),
+                        weight=3,
+                        fill=True,
+                        fill_opacity=0.5,
+                        popup=f"{row['Polygon']}<br>Images: {row['Num of Images']}",
+                        tooltip=row["Polygon"]
+                    ).add_to(layers[layer_name])
+
+            # Add all layers to the map
+            for lg in layers.values():
+                lg.add_to(m)
+
+            # Add layer control and colour legend
+            folium.LayerControl().add_to(m)
+            colormap.add_to(m)
+
+            st_folium(m, width="100%", height=600)
+
+    except FileNotFoundError:
+        st.error(f"File 'polygon_frequency.csv' not found in the current folder.")
+    except Exception as e:
+        st.error(f"Error processing CSV: {e}")
