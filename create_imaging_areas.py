@@ -1114,7 +1114,7 @@ with tab8:
         </style>
     """, unsafe_allow_html=True)
 
-    st.title("🛰️ Wyvern Tasking Helper")
+    st.title("🛰️ WS Tasking Helper")
     
     if 'processed_df' not in st.session_state:
         st.session_state.processed_df = None
@@ -1255,7 +1255,7 @@ with tab8:
         st.download_button(
             label="🚀 Export Tasking Plan (.txt)",
             data=text_output,
-            file_name=f"wyvern_plan_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+            file_name=f"ws_plan_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
             mime="text/plain",
             type="primary",
             use_container_width=True
