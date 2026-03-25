@@ -13,6 +13,9 @@ import tempfile
 import xml.sax.saxutils as saxutils
 import folium
 from streamlit_folium import st_folium
+from shapely.geometry import Polygon, MultiPolygon, Point, LineString
+from shapely.ops import unary_union, transform
+from shapely.affinity import rotate, translate
 
 # ----------------------------
 # App config
@@ -23,13 +26,14 @@ st.title("Operations Team Tooling")
 # ----------------------------
 # Tabs
 # ----------------------------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "Imaging Polygon Generator",
     "Shapefile → KMZ Converter",
     "OpenCosmos Tasking AOI Generator",
     "Subsection Generator",
     "Duplicate KMZs",
-    "Polygon Frequency Map"
+    "Polygon Frequency Map",
+    "Repeated Strip Generator"
 ])
 
 # ----------------------------
@@ -926,3 +930,166 @@ with tab6:
         st.error(f"File 'polygon_frequency.csv' not found in the current folder.")
     except Exception as e:
         st.error(f"Error processing CSV: {e}")
+
+
+
+# ----------------------------
+# Tab 7: Tramline Strip Generator (Unified Layer Version)
+# ----------------------------
+with tab7:
+    st.subheader("Repeated Strip Generator")
+    st.markdown("Generate parallel strips aligned to a master heading, saved into a single unified KMZ layer.")
+
+    # Initialize session state for persistence
+    if 'tab7_result_gdf' not in st.session_state:
+        st.session_state.tab7_result_gdf = None
+    if 'tab7_field_name' not in st.session_state:
+        st.session_state.tab7_field_name = ""
+
+    col_files, col_coords = st.columns([1, 1])
+
+    with col_files:
+        st.markdown("### 1. Field Boundary")
+        field_name_input = st.text_input("Field Name", value="Field_A1")
+        uploaded_field = st.file_uploader(
+            "Upload Field KMZ/SHP", 
+            type=["kmz", "shp", "shx", "dbf", "prj"], 
+            key="tab7_upload_input"
+        )
+        strip_width = st.number_input("Strip/Tramline Width (m)", value=24.0, step=0.5)
+
+    with col_coords:
+        st.markdown("### 2. Alignment Coordinates")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("**First Strip (A)**")
+            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0.311340)
+            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=51.908700)
+            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0.311320)
+            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=51.906840)
+        with c2:
+            st.write("**Final Strip (B)**")
+            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0.316890)
+            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=51.908850)
+
+    # --- GENERATION LOGIC ---
+    if st.button("Generate & Clip Strips", type="primary", key="tab7_gen_btn"):
+        if not uploaded_field:
+            st.error("Please upload a field boundary first.")
+        else:
+            try:
+                # 1. Load and Project Field
+                field_gdf = load_vector_file([uploaded_field] if not isinstance(uploaded_field, list) else uploaded_field)
+                if field_gdf is not None:
+                    avg_lon = field_gdf.geometry.centroid.x.mean()
+                    avg_lat = field_gdf.geometry.centroid.y.mean()
+                    utm_zone = int((avg_lon + 180) / 6) + 1
+                    epsg_code = 32600 + utm_zone if avg_lat >= 0 else 32700 + utm_zone
+                    utm_crs = f"EPSG:{epsg_code}"
+                    
+                    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
+                    field_utm = field_gdf.to_crs(utm_crs).geometry.unary_union
+                    
+                    # 2. Geometry Setup
+                    p1_t = Point(to_utm(f_top_lon, f_top_lat))
+                    p1_b = Point(to_utm(f_bot_lon, f_bot_lat))
+                    p2_t = Point(to_utm(l_top_lon, l_top_lat))
+                    
+                    line1 = LineString([p1_t, p1_b])
+                    target_len = line1.length
+                    angle_v = math.atan2(p1_b.y - p1_t.y, p1_b.x - p1_t.x)
+                    angle_h = angle_v + (math.pi / 2)
+                    
+                    dist_vec_x, dist_vec_y = p2_t.x - p1_t.x, p2_t.y - p1_t.y
+                    total_dist = (dist_vec_x * math.cos(angle_h)) + (dist_vec_y * math.sin(angle_h))
+                    num_strips = int(round(abs(total_dist) / strip_width)) + 1
+                    direction = 1 if total_dist > 0 else -1
+                    
+                    # 3. Create Strips
+                    strips_list = []
+                    c1_utm = line1.centroid
+                    for i in range(num_strips):
+                        offset = i * strip_width * direction
+                        curr_cx = c1_utm.x + offset * math.cos(angle_h)
+                        curr_cy = c1_utm.y + offset * math.sin(angle_h)
+                        
+                        h_len = target_len / 2
+                        p_u = (curr_cx - h_len * math.cos(angle_v), curr_cy - h_len * math.sin(angle_v))
+                        p_d = (curr_cx + h_len * math.cos(angle_v), curr_cy + h_len * math.sin(angle_v))
+                        
+                        strip_geom = LineString([p_u, p_d]).buffer(strip_width/2, cap_style=2, join_style=2)
+                        clipped = strip_geom.intersection(field_utm)
+                        
+                        if not clipped.is_empty:
+                            strips_list.append({
+                                "Name": f"{field_name_input} - Strip {i+1}",
+                                "geometry": clipped,
+                                "parent_field": field_name_input,
+                                "width_m": strip_width,
+                                "is_field_section": "True"
+                            })
+                    
+                    if strips_list:
+                        st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
+                        st.session_state.tab7_field_name = field_name_input
+                    else:
+                        st.warning("No strips generated within the field boundary.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # --- PERSISTENT DISPLAY AREA ---
+    if st.session_state.tab7_result_gdf is not None:
+        res_gdf = st.session_state.tab7_result_gdf
+        f_name = st.session_state.tab7_field_name
+        field_bg_gdf = load_vector_file([uploaded_field] if not isinstance(uploaded_field, list) else uploaded_field)
+
+        st.divider()
+
+        # 1. Map Preview
+        m = folium.Map(location=[res_gdf.geometry.centroid.y.mean(), res_gdf.geometry.centroid.x.mean()], zoom_start=15)
+        folium.GeoJson(field_bg_gdf, name="Field Outline", style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
+        folium.GeoJson(res_gdf, name="Strips", tooltip=folium.GeoJsonTooltip(fields=["Name"]), style_function=lambda x: {'color': 'green', 'fillOpacity': 0.3, 'weight': 1}).add_to(m)
+        st_folium(m, width="100%", height=500, key="tab7_map_unified")
+
+        # 2. Unified KMZ Construction
+        kml = simplekml.Kml()
+        
+        # A. Add Field Boundary (Matching Metadata Schema)
+        for _, f_row in field_bg_gdf.iterrows():
+            f_geom = f_row.geometry
+            f_polys = [f_geom] if f_geom.geom_type == 'Polygon' else list(f_geom.geoms)
+            for p in f_polys:
+                pol = kml.newpolygon(name=f"BOUNDARY: {f_name}")
+                pol.outerboundaryis = list(p.exterior.coords)
+                pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
+                pol.style.linestyle.color = simplekml.Color.red
+                pol.style.linestyle.width = 4
+                # Uniform Metadata
+                pol.extendeddata.newdata("parent_field", "None")
+                pol.extendeddata.newdata("width_m", "0")
+                pol.extendeddata.newdata("is_field_section", "False")
+
+        # B. Add Strips
+        for _, s_row in res_gdf.iterrows():
+            s_geom = s_row.geometry
+            s_polys = [s_geom] if s_geom.geom_type == 'Polygon' else list(s_geom.geoms)
+            for p in s_polys:
+                pol = kml.newpolygon(name=s_row["Name"])
+                pol.outerboundaryis = list(p.exterior.coords)
+                pol.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
+                pol.style.linestyle.width = 1
+                # Uniform Metadata
+                pol.extendeddata.newdata("parent_field", str(s_row["parent_field"]))
+                pol.extendeddata.newdata("width_m", str(s_row["width_m"]))
+                pol.extendeddata.newdata("is_field_section", "True")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp:
+            kml.savekmz(tmp.name)
+            with open(tmp.name, "rb") as f:
+                st.download_button(
+                    label=f"📥 Download {f_name} Unified KMZ",
+                    data=f,
+                    file_name=f"{f_name}_unified.kmz",
+                    type="primary",
+                    key="tab7_dl_unified"
+                )
