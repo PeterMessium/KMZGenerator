@@ -26,14 +26,15 @@ st.title("Operations Team Tooling")
 # ----------------------------
 # Tabs
 # ----------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "Imaging Polygon Generator",
     "Shapefile → KMZ Converter",
     "OpenCosmos Tasking AOI Generator",
     "Subsection Generator",
     "Duplicate KMZs",
     "Polygon Frequency Map",
-    "Repeated Strip Generator"
+    "Repeated Strip Generator",
+    "WS Tasking Helper"
 ])
 
 # ----------------------------
@@ -1093,3 +1094,169 @@ with tab7:
                     type="primary",
                     key="tab7_dl_unified"
                 )
+
+with tab8:
+    import re
+    import pandas as pd
+    from datetime import datetime
+
+    # --- 1. FORCE WIDE LAYOUT & CUSTOM STYLING ---
+    st.markdown("""
+        <style>
+            .block-container {
+                max-width: 98% !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+            .stDataEditor {
+                width: 100% !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title("🛰️ Wyvern Tasking Helper")
+    
+    if 'processed_df' not in st.session_state:
+        st.session_state.processed_df = None
+
+    raw_text = st.text_area("Input Pass Data", height=200, placeholder="Paste Drag-001, Drag-002 logs here...")
+    
+    # --- 2. DATA PARSING & CLEANING ---
+    if st.button("Generate Table", type="primary"):
+        if raw_text:
+            sections = re.split(r'(Drag-\d+)', raw_text)
+            all_data = []
+            current_drag_id = "Unknown Satellite"
+            
+            # Pattern matches the log line and captures the entire line for export later
+            pattern = r"((.+?)\s\((.+?)\)\s--\s(\d{4}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})\sUTC:\sArea coverage:\s([\d.]+)%\sONA:\s([\d.-]+)\sCloud\sforecast:\s([\d.-]+)%.*)"
+
+            for section in sections:
+                if re.match(r'Drag-\d+', section):
+                    current_drag_id = section
+                else:
+                    matches = re.findall(pattern, section)
+                    for m in matches:
+                        full_line = m[0].strip()
+                        site_raw = m[1].strip()
+                        dir_raw = m[2].strip()
+
+                        # Logic to extract actual Direction vs leftover strings
+                        full_string = f"{site_raw} ({dir_raw})"
+                        dir_regex = r"([N|S][E|W](?:->|-)[N|S][E|W])"
+                        dir_match = re.search(dir_regex, full_string)
+                        suffix_match = re.search(r'(D\dD\d)', full_string)
+                        
+                        if dir_match:
+                            direction = dir_match.group(0)
+                        elif suffix_match:
+                            direction = suffix_match.group(0)
+                        else:
+                            direction = dir_raw
+
+                        # Normalize Site Name
+                        site_clean = site_raw.replace("CUSTOMER ", "").replace("Core Polygon ", "").replace("Polygon ", "").replace("Updated", "")
+                        if dir_match:
+                            site_clean = site_clean.replace(dir_match.group(0), "")
+                        site_clean = site_clean.strip()
+
+                        all_data.append({
+                            "Satellite": current_drag_id,
+                            "Site Name": site_clean,
+                            "Orbital Direction": direction,
+                            "Timestamp": datetime.strptime(f"{m[3]} {m[4]}", "%Y-%m-%d %H:%M:%S"),
+                            "Area Coverage": float(m[5]),
+                            "ONA": float(m[6]),
+                            "Cloud Coverage": float(m[7]),
+                            "Original Log Line": full_line
+                        })
+
+            if all_data:
+                df = pd.DataFrame(all_data)
+                df = df.sort_values(["Satellite", "Timestamp"])
+                
+                # Per-Satellite Pass Resetting
+                df['Time_Diff'] = df.groupby("Satellite")['Timestamp'].diff().dt.total_seconds() / 60
+                def assign_passes(group):
+                    pass_list = []
+                    curr_p = 1
+                    for diff in group['Time_Diff']:
+                        if diff > 60: 
+                            curr_p += 1
+                        pass_list.append(f"Pass {curr_p}")
+                    return pd.Series(pass_list, index=group.index)
+
+                df['Pass Group'] = df.groupby('Satellite', group_keys=False).apply(assign_passes)
+
+                # Filter and Deduplicate
+                df = df[df["Area Coverage"] >= 60]
+                df = df.sort_values("Area Coverage", ascending=False).drop_duplicates(
+                    subset=["Satellite", "Pass Group", "Site Name"]
+                )
+                
+                df["Select"] = False
+                st.session_state.processed_df = df.sort_values(["Satellite", "Timestamp"])
+            else:
+                st.error("No valid data found.")
+
+    # --- 3. DISPLAY & SELECTION ---
+    if st.session_state.processed_df is not None:
+        # We will store selected log lines in a specific structure for the text export
+        export_structure = {}
+
+        for drag_id, drag_group in st.session_state.processed_df.groupby("Satellite"):
+            st.header(f"🛰️ {drag_id}")
+            export_structure[drag_id] = []
+
+            for p_label, p_group in drag_group.groupby("Pass Group", sort=False):
+                st.subheader(f"📍 {p_label}")
+                
+                def get_cloud_bar(val):
+                    color = "🟢" if val < 20 else "🟡" if val <= 80 else "🔴"
+                    return f"{color} {'█' * int(val/10)}{'░' * (10-int(val/10))} {val}%"
+
+                display_df = p_group.copy()
+                display_df["Cloud Risk"] = display_df["Cloud Coverage"].apply(get_cloud_bar)
+                
+                edited_df = st.data_editor(
+                    display_df[["Select", "Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]],
+                    key=f"editor_{drag_id}_{p_label}",
+                    hide_index=True,
+                    use_container_width=True, 
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn("Select", width=50),
+                        "Orbital Direction": st.column_config.TextColumn("Orbital Direction", width=150),
+                        "Area Coverage": st.column_config.ProgressColumn("Area Coverage", format="%.1f%%", width=180),
+                    },
+                    disabled=["Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]
+                )
+
+                selected_rows = edited_df[edited_df["Select"] == True]
+                if not selected_rows.empty:
+                    # Find the original log line for the selected site name
+                    match_site = selected_rows.iloc[0]["Site Name"]
+                    original_line = p_group[p_group["Site Name"] == match_site]["Original Log Line"].values[0]
+                    export_structure[drag_id].append(f"{p_label}: {original_line}")
+                else:
+                    export_structure[drag_id].append(f"{p_label}: SKIP")
+
+        st.divider()
+
+        # --- 4. FINAL TEXT EXPORT ---
+        # Build the text file content
+        text_output = ""
+        for sat_id, pass_lines in export_structure.items():
+            text_output += f"{sat_id}:\n"
+            for line in pass_lines:
+                text_output += f"{line}\n"
+            text_output += "\n"
+
+        st.subheader("📋 Final Export")
+        st.download_button(
+            label="🚀 Export Tasking Plan (.txt)",
+            data=text_output,
+            file_name=f"wyvern_plan_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+            mime="text/plain",
+            type="primary",
+            use_container_width=True
+        )
