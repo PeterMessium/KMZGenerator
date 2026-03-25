@@ -956,7 +956,7 @@ with tab7:
             type=["kmz", "shp", "shx", "dbf", "prj"], 
             key="tab7_upload_input"
         )
-        strip_width = st.number_input("Strip/Tramline Width (m)", value=0, step=0.5)
+        strip_width = st.number_input("Strip/Tramline Width (m)", value=0.0, step=0.5)
 
     with col_coords:
         st.markdown("### 2. Alignment Coordinates")
