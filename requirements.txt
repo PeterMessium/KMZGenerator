@@ -1,7 +1,10 @@
 streamlit
+pandas
+numpy
+geopandas
+pyogrio
 simplekml
 shapely
 pyproj
-geopandas
 folium
-streamlit_folium
+streamlit-folium
