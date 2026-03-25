@@ -934,10 +934,10 @@ with tab6:
 
 
 # ----------------------------
-# Tab 7: Tramline Strip Generator (Unified Layer Version)
+# Tab 7: Tramline Strip Generator (Unified Layer - Type Fixed)
 # ----------------------------
 with tab7:
-    st.subheader("Repeated Strip Generator")
+    st.subheader("Parallel Tramline Strip Generator")
     st.markdown("Generate parallel strips aligned to a master heading, saved into a single unified KMZ layer.")
 
     # Initialize session state for persistence
@@ -950,12 +950,13 @@ with tab7:
 
     with col_files:
         st.markdown("### 1. Field Boundary")
-        field_name_input = st.text_input("Field Name", value="Field_A1")
+        field_name_input = st.text_input("Field Name", value="")
         uploaded_field = st.file_uploader(
             "Upload Field KMZ/SHP", 
             type=["kmz", "shp", "shx", "dbf", "prj"], 
             key="tab7_upload_input"
         )
+        # FIXED: value set to 0.0 to match step 0.5
         strip_width = st.number_input("Strip/Tramline Width (m)", value=0.0, step=0.5)
 
     with col_coords:
@@ -963,19 +964,23 @@ with tab7:
         c1, c2 = st.columns(2)
         with c1:
             st.write("**First Strip (A)**")
-            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0)
-            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=0)
-            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0)
-            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=0)
+            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0.0)
+            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=0.0)
+            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0.0)
+            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=0.0)
         with c2:
             st.write("**Final Strip (B)**")
-            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0)
-            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=0)
+            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0.0)
+            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=0.0)
 
     # --- GENERATION LOGIC ---
     if st.button("Generate & Clip Strips", type="primary", key="tab7_gen_btn"):
         if not uploaded_field:
             st.error("Please upload a field boundary first.")
+        elif any(v == 0.0 for v in [f_top_lon, f_top_lat, f_bot_lon, f_bot_lat, l_top_lon, l_top_lat]):
+            st.warning("Please enter valid coordinates for both Strip A and Strip B.")
+        elif strip_width <= 0:
+            st.warning("Please enter a valid Strip Width.")
         else:
             try:
                 # 1. Load and Project Field
@@ -1031,7 +1036,7 @@ with tab7:
                     
                     if strips_list:
                         st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
-                        st.session_state.tab7_field_name = field_name_input
+                        st.session_state.tab7_field_name = field_name_input if field_name_input else "Unnamed_Field"
                     else:
                         st.warning("No strips generated within the field boundary.")
             except Exception as e:
@@ -1054,7 +1059,6 @@ with tab7:
         # 2. Unified KMZ Construction
         kml = simplekml.Kml()
         
-        # A. Add Field Boundary (Matching Metadata Schema)
         for _, f_row in field_bg_gdf.iterrows():
             f_geom = f_row.geometry
             f_polys = [f_geom] if f_geom.geom_type == 'Polygon' else list(f_geom.geoms)
@@ -1064,12 +1068,10 @@ with tab7:
                 pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
                 pol.style.linestyle.color = simplekml.Color.red
                 pol.style.linestyle.width = 4
-                # Uniform Metadata
                 pol.extendeddata.newdata("parent_field", "None")
                 pol.extendeddata.newdata("width_m", "0")
                 pol.extendeddata.newdata("is_field_section", "False")
 
-        # B. Add Strips
         for _, s_row in res_gdf.iterrows():
             s_geom = s_row.geometry
             s_polys = [s_geom] if s_geom.geom_type == 'Polygon' else list(s_geom.geoms)
@@ -1078,7 +1080,6 @@ with tab7:
                 pol.outerboundaryis = list(p.exterior.coords)
                 pol.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
                 pol.style.linestyle.width = 1
-                # Uniform Metadata
                 pol.extendeddata.newdata("parent_field", str(s_row["parent_field"]))
                 pol.extendeddata.newdata("width_m", str(s_row["width_m"]))
                 pol.extendeddata.newdata("is_field_section", "True")
