@@ -956,21 +956,21 @@ with tab7:
             type=["kmz", "shp", "shx", "dbf", "prj"], 
             key="tab7_upload_input"
         )
-        strip_width = st.number_input("Strip/Tramline Width (m)", value=24.0, step=0.5)
+        strip_width = st.number_input("Strip/Tramline Width (m)", value=0, step=0.5)
 
     with col_coords:
         st.markdown("### 2. Alignment Coordinates")
         c1, c2 = st.columns(2)
         with c1:
             st.write("**First Strip (A)**")
-            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0.311340)
-            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=51.908700)
-            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0.311320)
-            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=51.906840)
+            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0)
+            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=0)
+            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0)
+            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=0)
         with c2:
             st.write("**Final Strip (B)**")
-            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0.316890)
-            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=51.908850)
+            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0)
+            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=0)
 
     # --- GENERATION LOGIC ---
     if st.button("Generate & Clip Strips", type="primary", key="tab7_gen_btn"):
