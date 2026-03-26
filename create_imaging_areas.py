@@ -16,31 +16,112 @@ from streamlit_folium import st_folium
 from shapely.geometry import Polygon, MultiPolygon, Point, LineString
 from shapely.ops import unary_union, transform
 from shapely.affinity import rotate, translate
+import re
+import pandas as pd
+from datetime import datetime
 
 # ----------------------------
-# App config
+# APP CONFIG
 # ----------------------------
-st.set_page_config(page_title="Operations Team Tooling", layout="wide")
-st.title("Operations Team Tooling")
+
+if 'selected_tool' not in st.session_state:
+    st.session_state.selected_tool = "Imaging Polygon Generator"
+
+# ---------------------------------------------------------
+# SIDEBAR NAVIGATION
+# ---------------------------------------------------------
+
+st.sidebar.header("Operations Team Tooling")
+
+# Helper function now takes 'container' as an argument
+def nav_button(label, tool_id, container):
+    # Determine button type based on selection
+    button_type = "primary" if st.session_state.selected_tool == tool_id else "secondary"
+    
+    # CRITICAL: We call .button() ON the container (the expander)
+    if container.button(label, use_container_width=True, type=button_type):
+        st.session_state.selected_tool = tool_id
+        st.rerun()
+
+# Section 1: Polygon Tools
+poly_expander = st.sidebar.expander("Polygon Tools", expanded=True)
+nav_button("Imaging Polygon Generator", "Imaging Polygon Generator", poly_expander)
+nav_button("Duplicate KMZs", "Duplicate KMZs", poly_expander)
+nav_button("Shapefile → KMZ Converter", "Shapefile → KMZ Converter", poly_expander)
+nav_button("Subsection Generator", "Subsection Generator", poly_expander)
+nav_button("Repeated Strip Generator", "Repeated Strip Generator", poly_expander)
+
+# Section 2: Satellite Tasking
+task_expander = st.sidebar.expander("Satellite Tasking Tools", expanded=True)
+nav_button("Image Frequency Map", "Polygon Frequency Map", task_expander)
+nav_button("OC Tasking AOI Generator", "OC Tasking AOI Generator", task_expander)
+nav_button("WS Tasking Helper", "WS Tasking Helper", task_expander)
+
+st.sidebar.divider()
+st.sidebar.caption(f"Active Tool: **{st.session_state.selected_tool}**")
+
+selected_tool = st.session_state.selected_tool
+
+
 
 # ----------------------------
-# Tabs
+# SHARED HELPER FILES
 # ----------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "Imaging Polygon Generator",
-    "Shapefile → KMZ Converter",
-    "OpenCosmos Tasking AOI Generator",
-    "Subsection Generator",
-    "Duplicate KMZs",
-    "Polygon Frequency Map",
-    "Repeated Strip Generator",
-    "WS Tasking Helper"
-])
 
-# ----------------------------
-# Tab 1: Imaging Polygon Generator
-# ----------------------------
-with tab1:
+def load_vector_file(uploaded_files):
+    kmz_file = next((f for f in uploaded_files if f.name.lower().endswith(".kmz")), None)
+    shp_file = next((f for f in uploaded_files if f.name.lower().endswith(".shp")), None)
+    gdf = None
+    if kmz_file:
+        with tempfile.TemporaryDirectory() as tmp:
+            kmz_path = os.path.join(tmp, kmz_file.name)
+            with open(kmz_path, "wb") as f:
+                f.write(kmz_file.getbuffer())
+            with zipfile.ZipFile(kmz_path, "r") as kmz:
+                kml_files = [n for n in kmz.namelist() if n.lower().endswith(".kml")]
+                if not kml_files: raise ValueError("No KML found inside KMZ")
+                kmz.extract(kml_files[0], tmp)
+                kml_path = os.path.join(tmp, kml_files[0])
+                gdf = gpd.read_file(kml_path, driver="KML")
+    elif shp_file:
+        with tempfile.TemporaryDirectory() as tmp:
+            for f in uploaded_files:
+                with open(os.path.join(tmp, f.name), "wb") as out:
+                    out.write(f.getbuffer())
+            shp_path = os.path.join(tmp, shp_file.name)
+            gdf = gpd.read_file(shp_path)
+    if gdf is not None and gdf.crs != "EPSG:4326":
+        gdf = gdf.to_crs(epsg=4326)
+    return gdf
+
+def infer_hierarchy(gdf, name_col="Name", buffer_tolerance=0.0005, min_overlap_ratio=0.02):
+    gdf = gdf.copy()
+    if name_col not in gdf.columns:
+        gdf[name_col] = ["Field_" + str(i) for i in range(len(gdf))]
+    gdf["parent_field_name"] = None
+    gdf["is_top_level"] = True
+    gdf["_area"] = gdf.geometry.area
+    gdf = gdf.sort_values("_area", ascending=False).reset_index(drop=True)
+    buffered_geoms = gdf.geometry.buffer(buffer_tolerance)
+    for i, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty: continue
+        for j in range(i):
+            parent_geom = buffered_geoms.iloc[j]
+            if parent_geom is None or parent_geom.is_empty: continue
+            intersection_area = parent_geom.intersection(geom).area
+            overlap_ratio = intersection_area / geom.area
+            if overlap_ratio >= min_overlap_ratio or parent_geom.intersects(geom):
+                gdf.at[i, "parent_field_name"] = str(gdf.at[j, name_col])
+                gdf.at[i, "is_top_level"] = False
+                break
+    gdf.drop(columns="_area", inplace=True)
+    return gdf
+
+
+# Tool 1: Imaging Polygon Generator
+
+if selected_tool == "Imaging Polygon Generator":
 
     MODE_COUNTRY = "Generate batch of polygons"
     MODE_MANUAL = "Coordinates-based input"
@@ -216,10 +297,8 @@ with tab1:
         except Exception as e:
             st.error(f"Error: {e}")
 
-# ----------------------------
-# Tab 2: Shapefile → KMZ Converter (Improved)
-# ----------------------------
-with tab2:
+
+elif selected_tool == "Shapefile → KMZ Converter":
 
     st.subheader("Upload Shapefile components (.shp, .shx, .dbf, .prj, .cpg)")
 
@@ -417,11 +496,10 @@ with tab2:
                     st.error(f"KMZ conversion failed: {e}")
 
   
-# ----------------------------
-# Tab 3: OC Tasking AOI Generator
-# ----------------------------
-with tab3:
-    st.subheader("OpenCosmos Tasking AOI Generator")
+elif selected_tool == "OC Tasking AOI Generator":
+
+
+    st.subheader("OC Tasking AOI Generator")
     st.markdown("""
     **Instructions:**  
     Upload a CSV file with headers: `Name`, `Lat`, `Long`  
@@ -482,65 +560,8 @@ with tab3:
             st.error(f"Error reading CSV: {e}")
 
 
-# ----------------------------
-# Shared Helper Functions
-# ----------------------------
-def load_vector_file(uploaded_files):
-    kmz_file = next((f for f in uploaded_files if f.name.lower().endswith(".kmz")), None)
-    shp_file = next((f for f in uploaded_files if f.name.lower().endswith(".shp")), None)
-    gdf = None
-    if kmz_file:
-        with tempfile.TemporaryDirectory() as tmp:
-            kmz_path = os.path.join(tmp, kmz_file.name)
-            with open(kmz_path, "wb") as f:
-                f.write(kmz_file.getbuffer())
-            with zipfile.ZipFile(kmz_path, "r") as kmz:
-                kml_files = [n for n in kmz.namelist() if n.lower().endswith(".kml")]
-                if not kml_files: raise ValueError("No KML found inside KMZ")
-                kmz.extract(kml_files[0], tmp)
-                kml_path = os.path.join(tmp, kml_files[0])
-                gdf = gpd.read_file(kml_path, driver="KML")
-    elif shp_file:
-        with tempfile.TemporaryDirectory() as tmp:
-            for f in uploaded_files:
-                with open(os.path.join(tmp, f.name), "wb") as out:
-                    out.write(f.getbuffer())
-            shp_path = os.path.join(tmp, shp_file.name)
-            gdf = gpd.read_file(shp_path)
-    if gdf is not None and gdf.crs != "EPSG:4326":
-        gdf = gdf.to_crs(epsg=4326)
-    return gdf
+elif selected_tool == "Subsection Generator":
 
-def infer_hierarchy(gdf, name_col="Name", buffer_tolerance=0.0005, min_overlap_ratio=0.02):
-    gdf = gdf.copy()
-    if name_col not in gdf.columns:
-        gdf[name_col] = ["Field_" + str(i) for i in range(len(gdf))]
-    gdf["parent_field_name"] = None
-    gdf["is_top_level"] = True
-    gdf["_area"] = gdf.geometry.area
-    gdf = gdf.sort_values("_area", ascending=False).reset_index(drop=True)
-    buffered_geoms = gdf.geometry.buffer(buffer_tolerance)
-    for i, row in gdf.iterrows():
-        geom = row.geometry
-        if geom is None or geom.is_empty: continue
-        for j in range(i):
-            parent_geom = buffered_geoms.iloc[j]
-            if parent_geom is None or parent_geom.is_empty: continue
-            intersection_area = parent_geom.intersection(geom).area
-            overlap_ratio = intersection_area / geom.area
-            if overlap_ratio >= min_overlap_ratio or parent_geom.intersects(geom):
-                gdf.at[i, "parent_field_name"] = str(gdf.at[j, name_col])
-                gdf.at[i, "is_top_level"] = False
-                break
-    gdf.drop(columns="_area", inplace=True)
-    return gdf
-
-# [Note: Tab 1, 2, and 3 logic remains as per original script]
-
-# ----------------------------
-# Tab 4: Subsection Generator
-# ----------------------------
-with tab4:
     st.subheader("Subsection Generator")
     
     uploaded_files = st.file_uploader(
@@ -706,10 +727,8 @@ with tab4:
                 st.warning("No polygons were selected for export.")
 
 
-# ----------------------------
-# Tab 5: Duplicate KMZs
-# ----------------------------
-with tab5:
+elif selected_tool == "Duplicate KMZs":
+
 
     st.subheader("Duplicate KMZ Polygons")
 
@@ -835,7 +854,8 @@ with tab5:
 
 
 
-with tab6:
+elif selected_tool == "Polygon Frequency Map":
+
     st.subheader("Visualise Polygon Image Frequency with Layers and Scaled Colours")
 
     try:
@@ -933,193 +953,328 @@ with tab6:
         st.error(f"Error processing CSV: {e}")
 
 
+elif selected_tool == "Repeated Strip Generator":
 
-# ----------------------------
-# Tab 7: Tramline Strip Generator (Unified Layer Version)
-# ----------------------------
-with tab7:
+    # --- 1. STYLING ---
+    # We target 'button:disabled' specifically to ensure the "gray out" effect.
+    st.markdown("""
+        <style>
+            .block-container { max-width: 98% !important; padding-left: 1rem !important; padding-right: 1rem !important; padding-top: 2rem !important; }
+            
+            /* Primary Button Style (Red) */
+            div.stButton > button[kind="primary"] { 
+                background-color: #ef4444 !important; 
+                color: white !important; 
+                border: none !important; 
+                border-radius: 10px !important; 
+                font-weight: 600 !important; 
+            }
+
+            /* Gray out the button when disabled */
+            div.stButton > button:disabled {
+                background-color: #374151 !important; /* Dark slate gray */
+                color: #9CA3AF !important; /* Muted light gray text */
+                border: 1px solid #4B5563 !important;
+                cursor: not-allowed !important;
+                opacity: 0.6 !important;
+            }
+
+            div.stButton > button[kind="secondary"] { border-radius: 10px !important; }
+            div.stDownloadButton button { background-color: #1E3A8A !important; color: white !important; border: 1px solid #2563EB !important; border-radius: 10px !important; font-weight: 600 !important; width: 100% !important; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- 2. SESSION STATE ---
+    keys = {
+        'field_name': "", 'strip_w': "", 'headland_b': 0.0,
+        'f_t_lon': "", 'f_t_lat': "", 'f_b_lon': "", 'f_b_lat': "",
+        'l_t_lon': "", 'l_t_lat': "", 'l_b_lon': "", 'l_b_lat': "",
+        'tab7_result_gdf': None, 'tab7_field_name': ""
+    }
+    for key, val in keys.items():
+        if key not in st.session_state: st.session_state[key] = val
+
+    # --- 3. HEADER ---
     st.subheader("Repeated Strip Generator")
-    st.markdown("Generate parallel strips aligned to a master heading, saved into a single unified KMZ layer.")
+    st.markdown("For alternating strip trials.")
 
-    # Initialize session state for persistence
-    if 'tab7_result_gdf' not in st.session_state:
-        st.session_state.tab7_result_gdf = None
-    if 'tab7_field_name' not in st.session_state:
-        st.session_state.tab7_field_name = ""
+    # --- 4. TOGGLEABLE INFO BOX ---
+    with st.expander("📖 Click here to learn how to use this tool"):
+        info_col1, info_col2 = st.columns([1, 1]) 
+        with info_col1:
+            st.markdown("""
+                ### How to Use
+                **Method 1: Manual Entry**
+                1. Upload your field boundary KMZ/SHP.
+                2. Manually type the Top and Bottom coordinates for your **First** and **Last** strips.
+                
+                **Method 2: Auto-Fill via KMZ**
+                1. Create a KMZ containing your field polygon and **4 Placemarks**.
+                2. Name the placemarks exactly as follows:
+                    * `First - Top`, `First - Bottom`, `Last - Top`, `Last - Bottom`
+                3. Upon upload, coordinates and field name auto-populate.
+                
+                *Note: Tramline Width (m) and Headland Buffer (m) must always be entered manually.*
+            """)
+        with info_col2:
+            try:
+                st.image("help.png", caption="KMZ Placemark Naming Scheme", use_container_width=True)
+            except:
+                st.warning("help.png not found in script directory.")
 
-    col_files, col_coords = st.columns([1, 1])
+    st.divider()
 
+    # --- 5. UI LAYOUT ---
+    col_files, col_coords = st.columns([1, 1.5])
     with col_files:
         st.markdown("### 1. Field Boundary")
-        field_name_input = st.text_input("Field Name", value="Field_A1")
-        uploaded_field = st.file_uploader(
-            "Upload Field KMZ/SHP", 
-            type=["kmz", "shp", "shx", "dbf", "prj"], 
-            key="tab7_upload_input"
-        )
-        strip_width = st.number_input("Strip/Tramline Width (m)", value=24.0, step=0.5)
+        uploaded_field = st.file_uploader("Upload KMZ/SHP", type=["kmz", "shp", "kml"], key="tab7_upload_input")
+        
+        if uploaded_field:
+            try:
+                raw_gdf = load_vector_file([uploaded_field])
+                if raw_gdf is not None:
+                    poly_features = raw_gdf[raw_gdf.geometry.type == 'Polygon']
+                    if not poly_features.empty and st.session_state.field_name == "":
+                        st.session_state.field_name = str(poly_features.iloc[0].get('Name', 'Field')).strip()
+                    
+                    point_features = raw_gdf[raw_gdf.geometry.type == 'Point']
+                    name_map = {
+                        "First - Top": ("f_t_lat", "f_t_lon"), 
+                        "First - Bottom": ("f_b_lat", "f_b_lon"), 
+                        "Last - Top": ("l_t_lat", "l_t_lon"), 
+                        "Last - Bottom": ("l_b_lat", "l_b_lon")
+                    }
+                    for _, row in point_features.iterrows():
+                        p_name = str(row.get('Name', '')).strip()
+                        if p_name in name_map:
+                            lat_key, lon_key = name_map[p_name]
+                            st.session_state[lat_key], st.session_state[lon_key] = f"{row.geometry.y:.6f}", f"{row.geometry.x:.6f}"
+            except Exception as e: st.error(f"Upload error: {e}")
+            
+        st.text_input("Field Name", key="field_name")
+        st.text_input("Tramline Width (m)", key="strip_w")
+        st.number_input("Headland Buffer (m)", min_value=0.0, step=1.0, key="headland_b")
 
     with col_coords:
         st.markdown("### 2. Alignment Coordinates")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**First Strip (A)**")
-            f_top_lon = st.number_input("Top Long (A)", format="%.6f", value=0.311340)
-            f_top_lat = st.number_input("Top Lat (A)", format="%.6f", value=51.908700)
-            f_bot_lon = st.number_input("Bottom Long (A)", format="%.6f", value=0.311320)
-            f_bot_lat = st.number_input("Bottom Lat (A)", format="%.6f", value=51.906840)
-        with c2:
-            st.write("**Final Strip (B)**")
-            l_top_lon = st.number_input("Top Long (B)", format="%.6f", value=0.316890)
-            l_top_lat = st.number_input("Top Lat (B)", format="%.6f", value=51.908850)
+        with st.container(border=True):
+            st.markdown("**First Strip**")
+            r1c1, r1c2 = st.columns(2)
+            r1c1.text_input("Top Latitude", key="f_t_lat")
+            r1c2.text_input("Top Longitude", key="f_t_lon")
+            r2c1, r2c2 = st.columns(2)
+            r2c1.text_input("Bottom Latitude", key="f_b_lat")
+            r2c2.text_input("Bottom Longitude", key="f_b_lon")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("**Last Strip**")
+            r3c1, r3c2 = st.columns(2)
+            r3c1.text_input("Top Latitude", key="l_t_lat")
+            r3c2.text_input("Top Longitude", key="l_t_lon")
+            r4c1, r4c2 = st.columns(2)
+            r4c1.text_input("Bottom Latitude", key="l_b_lat")
+            r4c2.text_input("Bottom Longitude", key="l_b_lon")
 
-    # --- GENERATION LOGIC ---
-    if st.button("Generate & Clip Strips", type="primary", key="tab7_gen_btn"):
-        if not uploaded_field:
-            st.error("Please upload a field boundary first.")
-        else:
-            try:
-                # 1. Load and Project Field
-                field_gdf = load_vector_file([uploaded_field] if not isinstance(uploaded_field, list) else uploaded_field)
-                if field_gdf is not None:
-                    avg_lon = field_gdf.geometry.centroid.x.mean()
-                    avg_lat = field_gdf.geometry.centroid.y.mean()
-                    utm_zone = int((avg_lon + 180) / 6) + 1
-                    epsg_code = 32600 + utm_zone if avg_lat >= 0 else 32700 + utm_zone
-                    utm_crs = f"EPSG:{epsg_code}"
-                    
-                    to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
-                    field_utm = field_gdf.to_crs(utm_crs).geometry.unary_union
-                    
-                    # 2. Geometry Setup
-                    p1_t = Point(to_utm(f_top_lon, f_top_lat))
-                    p1_b = Point(to_utm(f_bot_lon, f_bot_lat))
-                    p2_t = Point(to_utm(l_top_lon, l_top_lat))
-                    
-                    line1 = LineString([p1_t, p1_b])
-                    target_len = line1.length
-                    angle_v = math.atan2(p1_b.y - p1_t.y, p1_b.x - p1_t.x)
-                    angle_h = angle_v + (math.pi / 2)
-                    
-                    dist_vec_x, dist_vec_y = p2_t.x - p1_t.x, p2_t.y - p1_t.y
-                    total_dist = (dist_vec_x * math.cos(angle_h)) + (dist_vec_y * math.sin(angle_h))
-                    num_strips = int(round(abs(total_dist) / strip_width)) + 1
-                    direction = 1 if total_dist > 0 else -1
-                    
-                    # 3. Create Strips
-                    strips_list = []
-                    c1_utm = line1.centroid
-                    for i in range(num_strips):
-                        offset = i * strip_width * direction
-                        curr_cx = c1_utm.x + offset * math.cos(angle_h)
-                        curr_cy = c1_utm.y + offset * math.sin(angle_h)
-                        
-                        h_len = target_len / 2
-                        p_u = (curr_cx - h_len * math.cos(angle_v), curr_cy - h_len * math.sin(angle_v))
-                        p_d = (curr_cx + h_len * math.cos(angle_v), curr_cy + h_len * math.sin(angle_v))
-                        
-                        strip_geom = LineString([p_u, p_d]).buffer(strip_width/2, cap_style=2, join_style=2)
-                        clipped = strip_geom.intersection(field_utm)
-                        
-                        if not clipped.is_empty:
-                            strips_list.append({
-                                "Name": f"{field_name_input} - Strip {i+1}",
-                                "geometry": clipped,
-                                "parent_field": field_name_input,
-                                "width_m": strip_width,
-                                "is_field_section": "True"
-                            })
-                    
-                    if strips_list:
-                        st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
-                        st.session_state.tab7_field_name = field_name_input
-                    else:
-                        st.warning("No strips generated within the field boundary.")
-            except Exception as e:
-                st.error(f"Error: {e}")
 
-    # --- PERSISTENT DISPLAY AREA ---
+    # --- 6. ACTIONS ---
+    # Comprehensive check for all required inputs
+    required_keys = [
+        'field_name', 'strip_w', 
+        'f_t_lat', 'f_t_lon', 'f_b_lat', 'f_b_lon', 
+        'l_t_lat', 'l_t_lon', 'l_b_lat', 'l_b_lon'
+    ]
+    
+    # Button is only clickable if all strings are non-empty AND a file is uploaded
+    all_filled = all(str(st.session_state.get(k, "")).strip() != "" for k in required_keys) and uploaded_field is not None
+
+    if st.button("Generate", type="primary", use_container_width=True, disabled=not all_filled):
+        try:
+            strip_width = float(st.session_state.strip_w)
+            h_buffer = float(st.session_state.headland_b)
+            field_gdf = load_vector_file([uploaded_field])
+            field_gdf = field_gdf[field_gdf.geometry.type == 'Polygon']
+            
+            if not field_gdf.empty:
+                avg_lon, avg_lat = field_gdf.geometry.centroid.x.mean(), field_gdf.geometry.centroid.y.mean()
+                utm_zone = int((avg_lon + 180) / 6) + 1
+                utm_crs = f"EPSG:{32600 + utm_zone if avg_lat >= 0 else 32700 + utm_zone}"
+                to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
+                field_utm_full = field_gdf.to_crs(utm_crs).geometry.unary_union
+                
+                field_utm_clipped = field_utm_full.buffer(-h_buffer) if h_buffer > 0 else field_utm_full
+                
+                p1_t = Point(to_utm(float(st.session_state.f_t_lon), float(st.session_state.f_t_lat)))
+                p1_b = Point(to_utm(float(st.session_state.f_b_lon), float(st.session_state.f_b_lat)))
+                p2_t = Point(to_utm(float(st.session_state.l_t_lon), float(st.session_state.l_t_lat)))
+                
+                angle_v = math.atan2(p1_b.y - p1_t.y, p1_b.x - p1_t.x)
+                angle_h = angle_v + (math.pi / 2)
+                
+                total_dist = ((p2_t.x - p1_t.x) * math.cos(angle_h)) + ((p2_t.y - p1_t.y) * math.sin(angle_h))
+                num_strips = int(round(abs(total_dist) / strip_width)) + 1
+                direction = 1 if total_dist > 0 else -1
+                
+                strips_list = []
+                c1_utm = LineString([p1_t, p1_b]).centroid
+                for i in range(num_strips):
+                    offset = i * strip_width * direction
+                    curr_cx, curr_cy = c1_utm.x + offset * math.cos(angle_h), c1_utm.y + offset * math.sin(angle_h)
+                    
+                    ext_len = 10000 
+                    p_u = (curr_cx - ext_len * math.cos(angle_v), curr_cy - ext_len * math.sin(angle_v))
+                    p_d = (curr_cx + ext_len * math.cos(angle_v), curr_cy + ext_len * math.sin(angle_v))
+                    
+                    strip_geom = LineString([p_u, p_d]).buffer(strip_width/2, cap_style=2, join_style=2)
+                    clipped = strip_geom.intersection(field_utm_clipped)
+                    
+                    if not clipped.is_empty and clipped.area > (strip_width * 80):
+                        strips_list.append({
+                            "Name": f"{st.session_state.field_name} - Strip {i+1}",
+                            "geometry": clipped,
+                            "parent_field": st.session_state.field_name,
+                            "width_m": strip_width,
+                            "is_field_section": "True"
+                        })
+                
+                if strips_list:
+                    st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
+                    st.session_state.tab7_field_name = st.session_state.field_name
+                    st.success(f"Generated {len(strips_list)} strips.")
+                else:
+                    st.error("No strips met the length requirements.")
+        except Exception as e: st.error(f"Error: {e}")
+
+    # --- 7. MAP & DOWNLOAD ---
     if st.session_state.tab7_result_gdf is not None:
         res_gdf = st.session_state.tab7_result_gdf
-        f_name = st.session_state.tab7_field_name
-        field_bg_gdf = load_vector_file([uploaded_field] if not isinstance(uploaded_field, list) else uploaded_field)
-
+        field_bg_gdf = load_vector_file([uploaded_field])
+        field_bg_gdf = field_bg_gdf[field_bg_gdf.geometry.type == 'Polygon']
         st.divider()
-
-        # 1. Map Preview
-        m = folium.Map(location=[res_gdf.geometry.centroid.y.mean(), res_gdf.geometry.centroid.x.mean()], zoom_start=15)
-        folium.GeoJson(field_bg_gdf, name="Field Outline", style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
-        folium.GeoJson(res_gdf, name="Strips", tooltip=folium.GeoJsonTooltip(fields=["Name"]), style_function=lambda x: {'color': 'green', 'fillOpacity': 0.3, 'weight': 1}).add_to(m)
-        st_folium(m, width="100%", height=500, key="tab7_map_unified")
-
-        # 2. Unified KMZ Construction
-        kml = simplekml.Kml()
         
-        # A. Add Field Boundary (Matching Metadata Schema)
+        m = folium.Map(location=[res_gdf.geometry.centroid.y.mean(), res_gdf.geometry.centroid.x.mean()], zoom_start=15)
+        folium.GeoJson(field_bg_gdf, style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
+        folium.GeoJson(res_gdf, tooltip=folium.GeoJsonTooltip(fields=["Name"]), style_function=lambda x: {'color': 'green', 'fillOpacity': 0.3, 'weight': 1}).add_to(m)
+        st_folium(m, width="100%", height=600, key="tab7_map_final")
+
+        kml = simplekml.Kml()
+        # Add Boundary
         for _, f_row in field_bg_gdf.iterrows():
-            f_geom = f_row.geometry
-            f_polys = [f_geom] if f_geom.geom_type == 'Polygon' else list(f_geom.geoms)
+            f_polys = [f_row.geometry] if f_row.geometry.geom_type == 'Polygon' else list(f_row.geometry.geoms)
             for p in f_polys:
-                pol = kml.newpolygon(name=f"BOUNDARY: {f_name}")
+                pol = kml.newpolygon(name=f"{st.session_state.tab7_field_name}")
                 pol.outerboundaryis = list(p.exterior.coords)
                 pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
                 pol.style.linestyle.color = simplekml.Color.red
                 pol.style.linestyle.width = 4
-                # Uniform Metadata
-                pol.extendeddata.newdata("parent_field", "None")
-                pol.extendeddata.newdata("width_m", "0")
                 pol.extendeddata.newdata("is_field_section", "False")
 
-        # B. Add Strips
+        # Add Strips
         for _, s_row in res_gdf.iterrows():
-            s_geom = s_row.geometry
-            s_polys = [s_geom] if s_geom.geom_type == 'Polygon' else list(s_geom.geoms)
+            s_polys = [s_row.geometry] if s_row.geometry.geom_type == 'Polygon' else list(s_row.geometry.geoms)
             for p in s_polys:
                 pol = kml.newpolygon(name=s_row["Name"])
                 pol.outerboundaryis = list(p.exterior.coords)
                 pol.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
-                pol.style.linestyle.width = 1
-                # Uniform Metadata
+                pol.extendeddata.newdata("is_field_section", "True")
                 pol.extendeddata.newdata("parent_field", str(s_row["parent_field"]))
                 pol.extendeddata.newdata("width_m", str(s_row["width_m"]))
-                pol.extendeddata.newdata("is_field_section", "True")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp:
             kml.savekmz(tmp.name)
             with open(tmp.name, "rb") as f:
-                st.download_button(
-                    label=f"📥 Download {f_name} Unified KMZ",
-                    data=f,
-                    file_name=f"{f_name}_unified.kmz",
-                    type="primary",
-                    key="tab7_dl_unified"
-                )
+                st.download_button(label=f"Download", data=f, file_name=f"{st.session_state.tab7_field_name}_strips.kmz", type="primary", use_container_width=True)
 
-with tab8:
-    import re
-    import pandas as pd
-    from datetime import datetime
 
-    # --- 1. FORCE WIDE LAYOUT & CUSTOM STYLING ---
+elif selected_tool == "WS Tasking Helper":
+
+    # --- 1. STYLING ---
     st.markdown("""
         <style>
+            /* Main Page Padding */
             .block-container {
                 max-width: 98% !important;
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
+                padding-bottom: 50px !important; 
             }
-            .stDataEditor {
+
+            /* FORCE TABLES TO EXPAND (Removes internal scrollbars) */
+            [data-testid="stDataEditor"] {
+                min-height: auto !important;
+            }
+            [data-testid="stDataEditor"] > div:first-child {
+                height: auto !important;
+                max-height: none !important;
+            }
+            
+            /* Professional Header Offset */
+            [id] {
+                scroll-margin-top: 110px;
+            }
+
+            /* Dark Blue Button Styling for the Export Action */
+            div.stDownloadButton button {
+                background-color: #1E3A8A !important; 
+                color: white !important;
+                border: 1px solid #2563EB !important;
+                border-radius: 10px !important;
+                height: 3.5rem !important; 
+                font-weight: 600 !important;
                 width: 100% !important;
+                margin-top: 20px;
+            }
+            
+            div.stDownloadButton button:hover {
+                background-color: #2563EB !important;
+                border-color: #3B82F6 !important;
+            }
+
+            /* Center align the satellite headers */
+            .sat-header {
+                text-align: center;
+                margin-top: 2rem;
+                margin-bottom: 1rem;
             }
         </style>
     """, unsafe_allow_html=True)
 
     st.title("🛰️ WS Tasking Helper")
-    
+
+    # --- INFO BOX ---
+    st.info("""
+    **How to use this tool:**
+    1. Copy and paste the tasking options directly from Slack into the text box below.
+    2. Click **Generate Table** to parse and clean the options.
+    3. Review each pass and select the best options using the checkboxes.
+    4. Export the final tasking plan using the **Export Tasking Plan** button.
+    """)
+
     if 'processed_df' not in st.session_state:
         st.session_state.processed_df = None
+    if 'should_scroll' not in st.session_state:
+        st.session_state.should_scroll = False
 
-    raw_text = st.text_area("Input Pass Data", height=200, placeholder="Paste Drag-001, Drag-002 logs here...")
+    import textwrap
+    from datetime import datetime
+    import re
+    import pandas as pd
+    import streamlit.components.v1 as components
+
+    placeholder_text = textwrap.dedent("""\
+        e.g.
+        Drag-001
+        ERT HU SZE 1 (NE->SW) -- 2026-03-28 07:41:01 UTC: Area coverage: 87.97% ONA: -13.88 Cloud forecast: -1.0% - scheduled
+        ERT HU SZE 1 (SE->NW) -- 2026-03-28 07:41:01 UTC: Area coverage: 100.00% ONA: -13.88 Cloud forecast: 100% - scheduled
+        ERT HU BAL (NE->SW) -- 2026-03-28 07:41:06 UTC: Area coverage: 85.74% ONA: -6.90 Cloud forecast: 100% - scheduled
+    """)
+
+    raw_text = st.text_area(
+        "Paste Tasking Options Below:",
+        height=250,
+        placeholder=placeholder_text
+    )
     
     # --- 2. DATA PARSING & CLEANING ---
     if st.button("Generate Table", type="primary"):
@@ -1128,7 +1283,6 @@ with tab8:
             all_data = []
             current_drag_id = "Unknown Satellite"
             
-            # Pattern matches the log line and captures the entire line for export later
             pattern = r"((.+?)\s\((.+?)\)\s--\s(\d{4}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})\sUTC:\sArea coverage:\s([\d.]+)%\sONA:\s([\d.-]+)\sCloud\sforecast:\s([\d.-]+)%.*)"
 
             for section in sections:
@@ -1137,121 +1291,101 @@ with tab8:
                 else:
                     matches = re.findall(pattern, section)
                     for m in matches:
-                        full_line = m[0].strip()
-                        site_raw = m[1].strip()
-                        dir_raw = m[2].strip()
-
-                        # Logic to extract actual Direction vs leftover strings
+                        full_line, site_raw, dir_raw, d_date, d_time, cov, ona, cloud = m
+                        
                         full_string = f"{site_raw} ({dir_raw})"
                         dir_regex = r"([N|S][E|W](?:->|-)[N|S][E|W])"
                         dir_match = re.search(dir_regex, full_string)
                         suffix_match = re.search(r'(D\dD\d)', full_string)
                         
-                        if dir_match:
-                            direction = dir_match.group(0)
-                        elif suffix_match:
-                            direction = suffix_match.group(0)
-                        else:
-                            direction = dir_raw
-
-                        # Normalize Site Name
+                        direction = dir_match.group(0) if dir_match else (suffix_match.group(0) if suffix_match else dir_raw)
                         site_clean = site_raw.replace("CUSTOMER ", "").replace("Core Polygon ", "").replace("Polygon ", "").replace("Updated", "")
-                        if dir_match:
-                            site_clean = site_clean.replace(dir_match.group(0), "")
-                        site_clean = site_clean.strip()
-
+                        if dir_match: site_clean = site_clean.replace(dir_match.group(0), "")
+                        
                         all_data.append({
-                            "Satellite": current_drag_id,
-                            "Site Name": site_clean,
+                            "Satellite": current_drag_id, 
+                            "Site Name": site_clean.strip(), 
                             "Orbital Direction": direction,
-                            "Timestamp": datetime.strptime(f"{m[3]} {m[4]}", "%Y-%m-%d %H:%M:%S"),
-                            "Area Coverage": float(m[5]),
-                            "ONA": float(m[6]),
-                            "Cloud Coverage": float(m[7]),
-                            "Original Log Line": full_line
+                            "Timestamp": datetime.strptime(f"{d_date} {d_time}", "%Y-%m-%d %H:%M:%S"),
+                            "Area Coverage": float(cov), 
+                            "ONA": float(ona), 
+                            "Cloud Coverage": float(cloud),
+                            "Original Log Line": full_line.strip()
                         })
 
             if all_data:
-                df = pd.DataFrame(all_data)
-                df = df.sort_values(["Satellite", "Timestamp"])
-                
-                # Per-Satellite Pass Resetting
+                df = pd.DataFrame(all_data).sort_values(["Satellite", "Timestamp"])
                 df['Time_Diff'] = df.groupby("Satellite")['Timestamp'].diff().dt.total_seconds() / 60
+                
                 def assign_passes(group):
-                    pass_list = []
-                    curr_p = 1
+                    pass_list, curr_p = [], 1
                     for diff in group['Time_Diff']:
-                        if diff > 60: 
-                            curr_p += 1
+                        if diff > 60: curr_p += 1
                         pass_list.append(f"Pass {curr_p}")
                     return pd.Series(pass_list, index=group.index)
 
                 df['Pass Group'] = df.groupby('Satellite', group_keys=False).apply(assign_passes)
-
-                # Filter and Deduplicate
-                df = df[df["Area Coverage"] >= 60]
-                df = df.sort_values("Area Coverage", ascending=False).drop_duplicates(
-                    subset=["Satellite", "Pass Group", "Site Name"]
-                )
+                df = df[df["Area Coverage"] >= 60].sort_values("Area Coverage", ascending=False)
+                df = df.drop_duplicates(subset=["Satellite", "Pass Group", "Site Name"])
                 
                 df["Select"] = False
                 st.session_state.processed_df = df.sort_values(["Satellite", "Timestamp"])
-            else:
-                st.error("No valid data found.")
+                st.session_state.should_scroll = True
+                st.rerun()
 
     # --- 3. DISPLAY & SELECTION ---
     if st.session_state.processed_df is not None:
-        # We will store selected log lines in a specific structure for the text export
+        
+        if st.session_state.get("should_scroll", False):
+            first_id = st.session_state.processed_df["Satellite"].iloc[0]
+            components.html(f"<script>window.parent.document.getElementById('{first_id}').scrollIntoView({{behavior: 'smooth'}});</script>", height=0)
+            st.session_state.should_scroll = False
+
         export_structure = {}
 
         for drag_id, drag_group in st.session_state.processed_df.groupby("Satellite"):
-            st.header(f"🛰️ {drag_id}")
+            # Satellite ID Anchor and Centered Header
+            st.markdown(f'<div id="{drag_id}"></div>', unsafe_allow_html=True)
+            st.markdown(f'<h2 class="sat-header">{drag_id}</h2>', unsafe_allow_html=True)
             export_structure[drag_id] = []
 
             for p_label, p_group in drag_group.groupby("Pass Group", sort=False):
-                st.subheader(f"📍 {p_label}")
+                # Target Icon for Passes
+                st.subheader(f"🎯 {p_label}")
                 
-                def get_cloud_bar(val):
-                    color = "🟢" if val < 20 else "🟡" if val <= 80 else "🔴"
-                    return f"{color} {'█' * int(val/10)}{'░' * (10-int(val/10))} {val}%"
-
                 display_df = p_group.copy()
-                display_df["Cloud Risk"] = display_df["Cloud Coverage"].apply(get_cloud_bar)
+                display_df["Cloud Risk"] = display_df["Cloud Coverage"].apply(
+                    lambda v: f"{'🟢' if v < 20 else '🟡' if v <= 80 else '🔴'} {'█' * int(v/10)}{'░' * (10-int(v/10))} {v}%"
+                )
                 
+                # Dynamic height to force full table expansion
+                row_height, header_height = 35, 40
+                calc_h = (len(display_df) * row_height) + header_height + 2
+
                 edited_df = st.data_editor(
                     display_df[["Select", "Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]],
                     key=f"editor_{drag_id}_{p_label}",
-                    hide_index=True,
+                    hide_index=True, 
                     use_container_width=True, 
-                    column_config={
-                        "Select": st.column_config.CheckboxColumn("Select", width=50),
-                        "Orbital Direction": st.column_config.TextColumn("Orbital Direction", width=150),
-                        "Area Coverage": st.column_config.ProgressColumn("Area Coverage", format="%.1f%%", width=180),
-                    },
+                    height=calc_h,
                     disabled=["Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]
                 )
 
                 selected_rows = edited_df[edited_df["Select"] == True]
                 if not selected_rows.empty:
-                    # Find the original log line for the selected site name
                     match_site = selected_rows.iloc[0]["Site Name"]
                     original_line = p_group[p_group["Site Name"] == match_site]["Original Log Line"].values[0]
                     export_structure[drag_id].append(f"{p_label}: {original_line}")
                 else:
                     export_structure[drag_id].append(f"{p_label}: SKIP")
 
+        # --- 4. FINAL EXPORT SECTION ---
         st.divider()
-
-        # --- 4. FINAL TEXT EXPORT ---
-        # Build the text file content
+        
         text_output = ""
         for sat_id, pass_lines in export_structure.items():
-            text_output += f"{sat_id}:\n"
-            for line in pass_lines:
-                text_output += f"{line}\n"
-            text_output += "\n"
+            text_output += f"{sat_id}:\n" + "\n".join(pass_lines) + "\n\n"
 
-        st.subheader("📋 Final Export")
         st.download_button(
             label="🚀 Export Tasking Plan (.txt)",
             data=text_output,
