@@ -625,20 +625,18 @@ elif selected_tool == "Subsection Generator":
 
     processed_datasets = []
     if uploaded_files:
-        # --- 3. PROCESSING DATA (Finalized) ---
+        # --- 3. PROCESSING DATA ---
         datasets = [[f] for f in uploaded_files]
         for i, dataset_files in enumerate(datasets):
             try:
                 gdf = load_vector_file(dataset_files)
                 if gdf is not None and not gdf.empty:
                     
-                    # --- FIX A: STRING SANITIZATION ---
-                    # This strips the '\n' found in your Prod report from all text columns
+                    # STRING SANITIZATION
                     for col in gdf.select_dtypes(include=['object']).columns:
                         gdf[col] = gdf[col].astype(str).str.strip()
 
-                    # --- FIX B: GEOMETRY FLATTENING ---
-                    # Converts POLYGON Z to POLYGON (2D) to ensure spatial joins work in Prod
+                    # GEOMETRY FLATTENING
                     if gdf.geometry.has_z.any():
                         from shapely.ops import transform
                         def to_2d(geom):
@@ -646,14 +644,12 @@ elif selected_tool == "Subsection Generator":
                             return transform(lambda x, y, z=None: (x, y), geom)
                         gdf["geometry"] = gdf["geometry"].apply(to_2d)
 
-                    # --- HIERARCHY LOGIC ---
+                    # HIERARCHY LOGIC
                     potential_cols = ["Name", "name", "Field", "field", "Label", "label", "ID"]
                     target_col = next((c for c in potential_cols if c in gdf.columns), None)
                     
                     if target_col:
-                        # Clean up the specific Name column
                         gdf["Name"] = gdf[target_col].replace(["nan", "None", ""], None)
-                        # Use a list comprehension to handle individual None values safely
                         gdf["Name"] = [n if (n and n != "None") else f"Field_{j}" for j, n in enumerate(gdf["Name"])]
                     else:
                         gdf["Name"] = [f"Field_{j}" for j in range(len(gdf))]
@@ -661,71 +657,13 @@ elif selected_tool == "Subsection Generator":
                     if gdf.crs != "EPSG:4326":
                         gdf = gdf.to_crs(epsg=4326)
 
-                    # Run your hierarchy detection on the cleaned data
                     gdf = infer_hierarchy(gdf, name_col="Name")
                     processed_datasets.append(gdf)
 
             except Exception as e:
                 st.error(f"Error loading KMZ {i+1}: {e}")
 
-# --- DIAGNOSTIC EXPORT BUTTON (Commented out) ---
-    # with st.expander("🛠️ Debug & Diagnostics"):
-    #     if uploaded_files and processed_datasets:
-    #         diag_output = []
-    #         diag_output.append("=== SYSTEM DIAGNOSTICS ===")
-    #         diag_output.append(f"Python Version: {sys.version}")
-    #         diag_output.append(f"Pandas Version: {pd.__version__}")
-    #         diag_output.append(f"GeoPandas Version: {gpd.__version__}")
-    #         
-    #         import pyproj, fiona, shapely
-    #         diag_output.append(f"Fiona Version: {fiona.__version__}")
-    #         diag_output.append(f"Shapely Version: {shapely.__version__}")
-    #         diag_output.append(f"PROJ Version: {pyproj.__version__}")
-    #         
-    #         for i, gdf in enumerate(processed_datasets):
-    #             diag_output.append(f"\n=== DATASET {i+1} DIAGNOSTICS ===")
-    #             diag_output.append(f"Rows: {len(gdf)}")
-    #             diag_output.append(f"CRS: {gdf.crs}")
-    #             diag_output.append(f"Columns Found: {list(gdf.columns)}")
-    #             diag_output.append("\n--- Column Data Types ---")
-    #             diag_output.append(gdf.dtypes.to_string())
-    #             
-    #             diag_output.append("\n--- Sample Data (First 5 Rows) ---")
-    #             diag_cols = [c for c in gdf.columns if c != 'geometry']
-    #             diag_output.append(gdf[diag_cols].head().to_string())
-    #             
-    #             diag_output.append("\n--- Geometry Precision Check ---")
-    #             if not gdf.empty:
-    #                 first_geom = gdf.geometry.iloc[0]
-    #                 diag_output.append(f"First Geometry Type: {first_geom.geom_type}")
-    #                 diag_output.append(f"Has Z (3D): {first_geom.has_z}")
-    #                 diag_output.append(f"First Geometry Sample: {str(first_geom)[:150]}...")
-    #
-    #         full_diag_text = "\n".join(diag_output)
-    #         
-    #         try:
-    #             server_addr = st.get_option('server.address')
-    #             is_prod = isinstance(server_addr, str) and 'streamlit' in server_addr
-    #         except:
-    #             is_prod = False
-    #             
-    #         if not is_prod:
-    #             is_prod = os.environ.get("STREAMLIT_RUNTIME_ENV") is not None
-    #         
-    #         env_label = "prod" if is_prod else "local"
-    #         
-    #         st.download_button(
-    #             label="📥 Export Diagnostic Report",
-    #             data=full_diag_text,
-    #             file_name=f"diag_report_{env_label}.txt",
-    #             mime="text/plain",
-    #             use_container_width=True,
-    #             key="diag_download_btn"
-    #         )
-    #     else:
-    #         st.info("Upload a KMZ first to generate diagnostics.")
-
-    # --- 4. MAIN INTERFACE (Only shown if files are processed) ---
+    # --- 4. MAIN INTERFACE ---
     if processed_datasets:
         dropdown_options = ["None"] + [g for g in st.session_state.group_names if g]
         col_input, col_map = st.columns([1.5, 1.5]) 
@@ -775,12 +713,7 @@ elif selected_tool == "Subsection Generator":
                     
                     if m_data and m_data["included"]:
                         group_name = m_data.get("group", "None")
-                        if is_top:
-                            color = "#1E3A8A"
-                        elif group_name != "None":
-                            color = st.session_state.group_colors.get(group_name, "#ff7f0e")
-                        else:
-                            color = "#ff7f0e"
+                        color = "#1E3A8A" if is_top else st.session_state.group_colors.get(group_name, "#ff7f0e")
 
                         label = m_data["name"] + (f" ({group_name})" if group_name != "None" else "")
                         geom = row.geometry
@@ -796,7 +729,6 @@ elif selected_tool == "Subsection Generator":
         # --- 5. GROUP MANAGER ---
         st.divider()
         st.markdown("#### 🛠️ Group Manager")
-        
         group_df_data = [{"Group Name": g} for g in st.session_state.group_names]
         current_df = pd.DataFrame(group_df_data)
 
@@ -818,89 +750,94 @@ elif selected_tool == "Subsection Generator":
         if st.button("Update Groups & Colors", use_container_width=True):
             valid_names = [g for g in edited_df["Group Name"].dropna().unique().tolist() if str(g).strip() != ""]
             st.session_state.group_names = valid_names
-            updated_colors = {name: new_color_map.get(name, st.session_state.group_colors.get(name, "#7F7F7F")) for name in valid_names}
-            st.session_state.group_colors = updated_colors
+            st.session_state.group_colors = {name: new_color_map.get(name, "#7F7F7F") for name in valid_names}
             st.rerun()
 
-    # --- 6. EXPORT LOGIC (Cleaned) ---
-    st.divider()
-    if st.button("Generate Subsection-Enabled KMZ", use_container_width=True, type="primary"):
-        output_generated = False
-        for d_idx, gdf in enumerate(processed_datasets):
-            kml = simplekml.Kml()
-            export_rows = []
+        # --- 6. EXPORT LOGIC ---
+        st.divider()
+        
+        # FIX: Button only shows if datasets exist
+        if st.button("Generate Subsection-Enabled KMZ", use_container_width=True, type="primary"):
+            output_generated = False
             
-            for idx, row in gdf.iterrows():
-                is_top = row["is_top_level"]
-                m_key = "top" if is_top else "sub"
-                m_lookup = row["Name"] if is_top else idx
-                m_data = all_mappings[d_idx][m_key].get(m_lookup)
+            # Anchor for scrolling
+            result_anchor = st.container()
 
-                if m_data and m_data["included"]:
-                    row_copy = row.copy()
-                    # We only keep what we actually use
-                    row_copy["Name"] = m_data["name"]
-                    row_copy["is_field_section"] = "True" if not is_top else "null"
-                    row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else "null"
-                    row_copy["ExportGroup"] = m_data.get("group", "None")
-                    export_rows.append(row_copy)
-            
-            if export_rows:
-                working_gdf = gpd.GeoDataFrame(export_rows, crs=gdf.crs)
+            for d_idx, gdf in enumerate(processed_datasets):
+                kml = simplekml.Kml()
+                export_rows = []
                 
-                # Separate into individual fields and grouped sections
-                ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"]
-                grouped = working_gdf[working_gdf["ExportGroup"] != "None"]
+                for idx, row in gdf.iterrows():
+                    is_top = row["is_top_level"]
+                    m_key = "top" if is_top else "sub"
+                    m_lookup = row["Name"] if is_top else idx
+                    m_data = all_mappings[d_idx][m_key].get(m_lookup)
+
+                    if m_data and m_data["included"]:
+                        row_copy = row.copy()
+                        row_copy["Name"] = m_data["name"]
+                        row_copy["is_field_section"] = "True" if not is_top else "null"
+                        row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else "null"
+                        row_copy["ExportGroup"] = m_data.get("group", "None")
+                        export_rows.append(row_copy)
                 
-                final_gdf_list = []
-                if not ungrouped.empty: final_gdf_list.append(ungrouped)
-                
-                if not grouped.empty:
-                    # Dissolve groups - this naturally strips old IDs/Styles
-                    dissolved = grouped.dissolve(by="ExportGroup", aggfunc={
-                        'Name': 'first', 
-                        'is_field_section': 'first', 
-                        'parent_field_name': 'first'
-                    }).reset_index()
-                    dissolved["Name"] = dissolved["ExportGroup"] 
-                    final_gdf_list.append(dissolved)
-                
-                if final_gdf_list:
-                    export_gdf = pd.concat(final_gdf_list, ignore_index=True)
+                if export_rows:
+                    working_gdf = gpd.GeoDataFrame(export_rows, crs=gdf.crs)
+                    ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"]
+                    grouped = working_gdf[working_gdf["ExportGroup"] != "None"]
                     
-                    for _, row in export_gdf.iterrows():
-                        geom = row.geometry
-                        # simplekml handles the ID generation automatically
-                        if geom.geom_type == 'Polygon':
-                            pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords))
-                        else:
-                            pol = kml.newmultigeometry(name=row["Name"])
-                            for part in geom.geoms:
-                                pol.newpolygon(outerboundaryis=list(part.exterior.coords))
-                        
-                        # Apply Dynamic Styling (No styleUrl needed)
-                        group_key = row.get("ExportGroup", "None")
-                        raw_hex = st.session_state.group_colors.get(group_key, "#1E3A8A")
-                        kml_color = hex_to_kml_color(raw_hex)
-                        
-                        pol.style.polystyle.color = kml_color
-                        pol.style.polystyle.fill = 1
-                        pol.style.linestyle.color = kml_color
-                        pol.style.linestyle.width = 2
-                        
-                        # Standardized Metadata
-                        pol.extendeddata.newdata("is_field_section", str(row["is_field_section"]))
-                        pol.extendeddata.newdata("parent_field_name", str(row["parent_field_name"]))
+                    final_gdf_list = []
+                    if not ungrouped.empty: final_gdf_list.append(ungrouped)
+                    if not grouped.empty:
+                        dissolved = grouped.dissolve(by="ExportGroup", aggfunc={'Name': 'first', 'is_field_section': 'first', 'parent_field_name': 'first'}).reset_index()
+                        dissolved["Name"] = dissolved["ExportGroup"] 
+                        final_gdf_list.append(dissolved)
+                    
+                    if final_gdf_list:
+                        export_gdf = pd.concat(final_gdf_list, ignore_index=True)
+                        for _, row in export_gdf.iterrows():
+                            geom = row.geometry
+                            if geom.geom_type == 'Polygon':
+                                pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords))
+                            else:
+                                pol = kml.newmultigeometry(name=row["Name"])
+                                for part in geom.geoms:
+                                    pol.newpolygon(outerboundaryis=list(part.exterior.coords))
+                            
+                            group_key = row.get("ExportGroup", "None")
+                            kml_color = hex_to_kml_color(st.session_state.group_colors.get(group_key, "#1E3A8A"))
+                            pol.style.polystyle.color, pol.style.polystyle.fill = kml_color, 1
+                            pol.style.linestyle.color, pol.style.linestyle.width = kml_color, 2
+                            pol.extendeddata.newdata("is_field_section", str(row["is_field_section"]))
+                            pol.extendeddata.newdata("parent_field_name", str(row["parent_field_name"]))
 
-                    # Save and Download
-                    kmz_path = f"export_{d_idx+1}.kmz"
-                    kml.savekmz(kmz_path)
-                    with open(kmz_path, "rb") as f:
-                        st.download_button(label=f"📥 Download {kmz_path}", data=f, file_name=kmz_path, key=f"dl_kmz_{d_idx}", use_container_width=True)
-                    output_generated = True
+                        kmz_path = f"export_{d_idx+1}.kmz"
+                        kml.savekmz(kmz_path)
+                        
+                        # Display result in the anchor area
+                        with result_anchor:
+                            st.success(f"✅ Success! {kmz_path} generated.")
+                            with open(kmz_path, "rb") as f:
+                                st.download_button(label=f"📥 Download {kmz_path}", data=f, file_name=kmz_path, key=f"dl_{d_idx}", use_container_width=True)
+                        output_generated = True
 
-        if not output_generated: 
-            st.warning("No polygons selected.")
+            if output_generated:
+                # JS to scroll to the download button
+                st.components.v1.html("""
+                    <script>
+                        var buttons = window.parent.document.querySelectorAll('button');
+                        for (var i = 0; i < buttons.length; i++) {
+                            if (buttons[i].textContent.includes('Download export')) {
+                                buttons[i].scrollIntoView({behavior: 'smooth'});
+                                break;
+                            }
+                        }
+                    </script>
+                """, height=0)
+            else:
+                st.warning("No polygons selected.")
+    else:
+        st.info("Upload a KMZ file to begin.")
 
 elif selected_tool == "Duplicate KMZs":
 
@@ -1131,11 +1068,31 @@ elif selected_tool == "Polygon Frequency Map":
 elif selected_tool == "Repeated Strip Generator":
 
     # --- 1. STYLING ---
-    # We target 'button:disabled' specifically to ensure the "gray out" effect.
     st.markdown("""
         <style>
             .block-container { max-width: 98% !important; padding-left: 1rem !important; padding-right: 1rem !important; padding-top: 2rem !important; }
             
+            /* Center-align the Header and Guide Link */
+            .center-wrapper {
+                text-align: center;
+                width: 100%;
+            }
+            
+            .docs-link {
+                display: inline-block;
+                padding: 12px 24px;
+                background-color: #374151;
+                color: #ffffff !important;
+                text-decoration: none !important;
+                border-radius: 10px;
+                font-weight: 600;
+                border: 1px solid #4B5563;
+                margin-top: 10px;
+                margin-bottom: 20px;
+                transition: background 0.3s;
+            }
+            .docs-link:hover { background-color: #4B5563; }
+
             /* Primary Button Style (Red) */
             div.stButton > button[kind="primary"] { 
                 background-color: #ef4444 !important; 
@@ -1143,88 +1100,84 @@ elif selected_tool == "Repeated Strip Generator":
                 border: none !important; 
                 border-radius: 10px !important; 
                 font-weight: 600 !important; 
+                height: 3.5rem !important;
+                width: 100% !important;
             }
 
             /* Gray out the button when disabled */
             div.stButton > button:disabled {
-                background-color: #374151 !important; /* Dark slate gray */
-                color: #9CA3AF !important; /* Muted light gray text */
-                border: 1px solid #4B5563 !important;
-                cursor: not-allowed !important;
+                background-color: #374151 !important;
+                color: #9CA3AF !important;
                 opacity: 0.6 !important;
+                cursor: not-allowed !important;
             }
 
-            div.stButton > button[kind="secondary"] { border-radius: 10px !important; }
-            div.stDownloadButton button { background-color: #1E3A8A !important; color: white !important; border: 1px solid #2563EB !important; border-radius: 10px !important; font-weight: 600 !important; width: 100% !important; }
+            /* Download Button Style (Blue & Full Width) */
+            div.stDownloadButton button { 
+                background-color: #1E3A8A !important; 
+                color: white !important; 
+                border-radius: 10px !important; 
+                font-weight: 600 !important; 
+                width: 100% !important; 
+                height: 3.5rem !important;
+                border: none !important;
+            }
         </style>
     """, unsafe_allow_html=True)
 
     # --- 2. SESSION STATE ---
+    if "rs_group_names" not in st.session_state:
+        st.session_state.rs_group_names = ["Messium", "Farm Standard"]
+    if "rs_group_colors" not in st.session_state:
+        st.session_state.rs_group_colors = {"Messium": "#1E3A8A", "Farm Standard": "#10B981"}
+    
     keys = {
         'field_name': "", 'strip_w': "", 'headland_b': 0.0,
         'f_t_lon': "", 'f_t_lat': "", 'f_b_lon': "", 'f_b_lat': "",
         'l_t_lon': "", 'l_t_lat': "", 'l_b_lon': "", 'l_b_lat': "",
-        'tab7_result_gdf': None, 'tab7_field_name': ""
+        'tab7_result_gdf': None, 'tab7_field_name': "", 'field_boundary_gdf': None
     }
     for key, val in keys.items():
         if key not in st.session_state: st.session_state[key] = val
 
-    # --- 3. HEADER ---
-    st.subheader("Repeated Strip Generator")
-    st.markdown("For alternating strip trials.")
+    def hex_to_kml_color(hex_str, opacity="b3"):
+        hex_str = hex_str.lstrip('#')
+        r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+        return f"{opacity}{b}{g}{r}"
 
-    # --- 4. TOGGLEABLE INFO BOX ---
-    with st.expander("📖 Click here to learn how to use this tool"):
-        info_col1, info_col2 = st.columns([1, 1]) 
-        with info_col1:
-            st.markdown("""
-                ### How to Use
-                **Method 1: Manual Entry**
-                1. Upload your field boundary KMZ/SHP.
-                2. Manually type the Top and Bottom coordinates for your **First** and **Last** strips.
-                
-                **Method 2: Auto-Fill via KMZ**
-                1. Create a KMZ containing your field polygon and **4 Placemarks**.
-                2. Name the placemarks exactly as follows:
-                    * `First - Top`, `First - Bottom`, `Last - Top`, `Last - Bottom`
-                3. Upon upload, coordinates and field name auto-populate.
-                
-                *Note: Tramline Width (m) and Headland Buffer (m) must always be entered manually.*
-            """)
-        with info_col2:
-            try:
-                st.image("help.png", caption="KMZ Placemark Naming Scheme", use_container_width=True)
-            except:
-                st.warning("help.png not found in script directory.")
+    # --- 3. HEADER & GUIDE LINK (Centered) ---
+    st.markdown("""
+        <div class="center-wrapper">
+            <h2 style="margin-bottom: 0px;">Repeated Strip Generator</h2>
+            <a href="https://docs.google.com/document/d/1ZR-0C6Y_YgmpQ0Kt_l7vvT9xGFtO-3I9GKug7SkQVd8/edit?usp=sharing" target="_blank" class="docs-link">📖 View How To Guide</a>
+        </div>
+    """, unsafe_allow_html=True)
 
     st.divider()
 
-    # --- 5. UI LAYOUT ---
+    # --- 4. INPUT UI ---
     col_files, col_coords = st.columns([1, 1.5])
     with col_files:
-        st.markdown("### 1. Field Boundary")
-        uploaded_field = st.file_uploader("Upload KMZ/SHP", type=["kmz", "shp", "kml"], key="tab7_upload_input")
+        st.markdown("### 1. Parameters")
+        uploaded_field = st.file_uploader("Upload KMZ/SHP", type=["kmz", "shp", "kml"], key="rs_upload")
         
         if uploaded_field:
             try:
                 raw_gdf = load_vector_file([uploaded_field])
                 if raw_gdf is not None:
-                    poly_features = raw_gdf[raw_gdf.geometry.type == 'Polygon']
-                    if not poly_features.empty and st.session_state.field_name == "":
-                        st.session_state.field_name = str(poly_features.iloc[0].get('Name', 'Field')).strip()
+                    poly_f = raw_gdf[raw_gdf.geometry.type == 'Polygon']
+                    if not poly_f.empty:
+                        st.session_state.field_boundary_gdf = poly_f
+                        if st.session_state.field_name == "":
+                            st.session_state.field_name = str(poly_f.iloc[0].get('Name', 'Field')).strip()
                     
-                    point_features = raw_gdf[raw_gdf.geometry.type == 'Point']
-                    name_map = {
-                        "First - Top": ("f_t_lat", "f_t_lon"), 
-                        "First - Bottom": ("f_b_lat", "f_b_lon"), 
-                        "Last - Top": ("l_t_lat", "l_t_lon"), 
-                        "Last - Bottom": ("l_b_lat", "l_b_lon")
-                    }
-                    for _, row in point_features.iterrows():
+                    point_f = raw_gdf[raw_gdf.geometry.type == 'Point']
+                    name_map = {"First - Top": ("f_t_lat", "f_t_lon"), "First - Bottom": ("f_b_lat", "f_b_lon"), 
+                                "Last - Top": ("l_t_lat", "l_t_lon"), "Last - Bottom": ("l_b_lat", "l_b_lon")}
+                    for _, row in point_f.iterrows():
                         p_name = str(row.get('Name', '')).strip()
                         if p_name in name_map:
-                            lat_key, lon_key = name_map[p_name]
-                            st.session_state[lat_key], st.session_state[lon_key] = f"{row.geometry.y:.6f}", f"{row.geometry.x:.6f}"
+                            st.session_state[name_map[p_name][0]], st.session_state[name_map[p_name][1]] = f"{row.geometry.y:.6f}", f"{row.geometry.x:.6f}"
             except Exception as e: st.error(f"Upload error: {e}")
             
         st.text_input("Field Name", key="field_name")
@@ -1232,39 +1185,22 @@ elif selected_tool == "Repeated Strip Generator":
         st.number_input("Headland Buffer (m)", min_value=0.0, step=1.0, key="headland_b")
 
     with col_coords:
-        st.markdown("### 2. Alignment Coordinates")
+        st.markdown("### 2. Alignment")
         with st.container(border=True):
-            st.markdown("**First Strip**")
-            r1c1, r1c2 = st.columns(2)
-            r1c1.text_input("Top Latitude", key="f_t_lat")
-            r1c2.text_input("Top Longitude", key="f_t_lon")
-            r2c1, r2c2 = st.columns(2)
-            r2c1.text_input("Bottom Latitude", key="f_b_lat")
-            r2c2.text_input("Bottom Longitude", key="f_b_lon")
-        
+            st.markdown("**First Strip Center**")
+            c1, c2 = st.columns(2); c1.text_input("Top Lat", key="f_t_lat"); c2.text_input("Top Lon", key="f_t_lon")
+            c3, c4 = st.columns(2); c3.text_input("Bottom Lat", key="f_b_lat"); c4.text_input("Bottom Lon", key="f_b_lon")
         st.markdown("<br>", unsafe_allow_html=True)
         with st.container(border=True):
-            st.markdown("**Last Strip**")
-            r3c1, r3c2 = st.columns(2)
-            r3c1.text_input("Top Latitude", key="l_t_lat")
-            r3c2.text_input("Top Longitude", key="l_t_lon")
-            r4c1, r4c2 = st.columns(2)
-            r4c1.text_input("Bottom Latitude", key="l_b_lat")
-            r4c2.text_input("Bottom Longitude", key="l_b_lon")
+            st.markdown("**Last Strip Center**")
+            c1, c2 = st.columns(2); c1.text_input("Top Lat", key="l_t_lat"); c2.text_input("Top Lon", key="l_t_lon")
+            c3, c4 = st.columns(2); c3.text_input("Bottom Lat", key="l_b_lat"); c4.text_input("Bottom Lon", key="l_b_lon")
 
+    # --- 5. GENERATION LOGIC ---
+    required = ['field_name', 'strip_w', 'f_t_lat', 'f_t_lon', 'f_b_lat', 'f_b_lon', 'l_t_lat', 'l_t_lon', 'l_b_lat', 'l_b_lon']
+    all_filled = all(str(st.session_state.get(k, "")).strip() != "" for k in required) and uploaded_field
 
-    # --- 6. ACTIONS ---
-    # Comprehensive check for all required inputs
-    required_keys = [
-        'field_name', 'strip_w', 
-        'f_t_lat', 'f_t_lon', 'f_b_lat', 'f_b_lon', 
-        'l_t_lat', 'l_t_lon', 'l_b_lat', 'l_b_lon'
-    ]
-    
-    # Button is only clickable if all strings are non-empty AND a file is uploaded
-    all_filled = all(str(st.session_state.get(k, "")).strip() != "" for k in required_keys) and uploaded_field is not None
-
-    if st.button("Generate", type="primary", use_container_width=True, disabled=not all_filled):
+    if st.button("Generate Strips", type="primary", use_container_width=True, disabled=not all_filled):
         try:
             strip_width = float(st.session_state.strip_w)
             h_buffer = float(st.session_state.headland_b)
@@ -1277,7 +1213,6 @@ elif selected_tool == "Repeated Strip Generator":
                 utm_crs = f"EPSG:{32600 + utm_zone if avg_lat >= 0 else 32700 + utm_zone}"
                 to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
                 field_utm_full = field_gdf.to_crs(utm_crs).geometry.unary_union
-                
                 field_utm_clipped = field_utm_full.buffer(-h_buffer) if h_buffer > 0 else field_utm_full
                 
                 p1_t = Point(to_utm(float(st.session_state.f_t_lon), float(st.session_state.f_t_lat)))
@@ -1286,7 +1221,6 @@ elif selected_tool == "Repeated Strip Generator":
                 
                 angle_v = math.atan2(p1_b.y - p1_t.y, p1_b.x - p1_t.x)
                 angle_h = angle_v + (math.pi / 2)
-                
                 total_dist = ((p2_t.x - p1_t.x) * math.cos(angle_h)) + ((p2_t.y - p1_t.y) * math.sin(angle_h))
                 num_strips = int(round(abs(total_dist) / strip_width)) + 1
                 direction = 1 if total_dist > 0 else -1
@@ -1296,11 +1230,9 @@ elif selected_tool == "Repeated Strip Generator":
                 for i in range(num_strips):
                     offset = i * strip_width * direction
                     curr_cx, curr_cy = c1_utm.x + offset * math.cos(angle_h), c1_utm.y + offset * math.sin(angle_h)
-                    
                     ext_len = 10000 
                     p_u = (curr_cx - ext_len * math.cos(angle_v), curr_cy - ext_len * math.sin(angle_v))
                     p_d = (curr_cx + ext_len * math.cos(angle_v), curr_cy + ext_len * math.sin(angle_v))
-                    
                     strip_geom = LineString([p_u, p_d]).buffer(strip_width/2, cap_style=2, join_style=2)
                     clipped = strip_geom.intersection(field_utm_clipped)
                     
@@ -1308,7 +1240,7 @@ elif selected_tool == "Repeated Strip Generator":
                         strips_list.append({
                             "Name": f"{st.session_state.field_name} - Strip {i+1}",
                             "geometry": clipped,
-                            "parent_field": st.session_state.field_name,
+                            "parent_field_name": st.session_state.field_name,
                             "width_m": strip_width,
                             "is_field_section": "True"
                         })
@@ -1317,49 +1249,102 @@ elif selected_tool == "Repeated Strip Generator":
                     st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
                     st.session_state.tab7_field_name = st.session_state.field_name
                     st.success(f"Generated {len(strips_list)} strips.")
-                else:
-                    st.error("No strips met the length requirements.")
+                    st.rerun()
         except Exception as e: st.error(f"Error: {e}")
 
-    # --- 7. MAP & DOWNLOAD ---
+    # --- 6. GROUPING & PREVIEW ---
     if st.session_state.tab7_result_gdf is not None:
-        res_gdf = st.session_state.tab7_result_gdf
-        field_bg_gdf = load_vector_file([uploaded_field])
-        field_bg_gdf = field_bg_gdf[field_bg_gdf.geometry.type == 'Polygon']
         st.divider()
+        res_gdf = st.session_state.tab7_result_gdf
+        field_bg_gdf = st.session_state.field_boundary_gdf
         
-        m = folium.Map(location=[res_gdf.geometry.centroid.y.mean(), res_gdf.geometry.centroid.x.mean()], zoom_start=15)
-        folium.GeoJson(field_bg_gdf, style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
-        folium.GeoJson(res_gdf, tooltip=folium.GeoJsonTooltip(fields=["Name"]), style_function=lambda x: {'color': 'green', 'fillOpacity': 0.3, 'weight': 1}).add_to(m)
-        st_folium(m, width="100%", height=600, key="tab7_map_final")
+        col_group, col_preview = st.columns([1.2, 1.8])
+        
+        with col_group:
+            st.markdown("### 3. Assign Groups")
+            assign_container = st.container(height=400)
+            group_options = ["None"] + st.session_state.rs_group_names
+            strip_mappings = {}
+            with assign_container:
+                for idx, row in res_gdf.iterrows():
+                    c1, c2 = st.columns([1, 1.5])
+                    c1.markdown(f"**Strip {idx+1}**")
+                    strip_mappings[idx] = c2.selectbox(f"Grp_{idx}", options=group_options, label_visibility="collapsed", key=f"rs_map_{idx}")
 
-        kml = simplekml.Kml()
-        # Add Boundary
-        for _, f_row in field_bg_gdf.iterrows():
-            f_polys = [f_row.geometry] if f_row.geometry.geom_type == 'Polygon' else list(f_row.geometry.geoms)
-            for p in f_polys:
-                pol = kml.newpolygon(name=f"{st.session_state.tab7_field_name}")
-                pol.outerboundaryis = list(p.exterior.coords)
-                pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
-                pol.style.linestyle.color = simplekml.Color.red
-                pol.style.linestyle.width = 4
-                pol.extendeddata.newdata("is_field_section", "False")
+            st.markdown("#### Edit Group Names")
+            g_df = pd.DataFrame([{"Group Name": g} for g in st.session_state.rs_group_names])
+            edited_g = st.data_editor(g_df, num_rows="dynamic", use_container_width=True, key="rs_g_editor")
+            cp1, cp2 = st.columns(2)
+            for i, g_name in enumerate(st.session_state.rs_group_names):
+                with cp1 if i % 2 == 0 else cp2:
+                    st.session_state.rs_group_colors[g_name] = st.color_picker(g_name, st.session_state.rs_group_colors.get(g_name, "#7F7F7F"), key=f"cp_rs_{g_name}")
 
-        # Add Strips
-        for _, s_row in res_gdf.iterrows():
-            s_polys = [s_row.geometry] if s_row.geometry.geom_type == 'Polygon' else list(s_row.geometry.geoms)
-            for p in s_polys:
-                pol = kml.newpolygon(name=s_row["Name"])
-                pol.outerboundaryis = list(p.exterior.coords)
-                pol.style.polystyle.color = simplekml.Color.changealphaint(100, simplekml.Color.green)
-                pol.extendeddata.newdata("is_field_section", "True")
-                pol.extendeddata.newdata("parent_field", str(s_row["parent_field"]))
-                pol.extendeddata.newdata("width_m", str(s_row["width_m"]))
+            if st.button("Update Group Settings"):
+                st.session_state.rs_group_names = [x for x in edited_g["Group Name"].tolist() if x]
+                st.rerun()
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp:
-            kml.savekmz(tmp.name)
-            with open(tmp.name, "rb") as f:
-                st.download_button(label=f"Download", data=f, file_name=f"{st.session_state.tab7_field_name}_strips.kmz", type="primary", use_container_width=True)
+        with col_preview:
+            st.markdown("### 4. Preview")
+            m = folium.Map(location=[res_gdf.geometry.centroid.y.mean(), res_gdf.geometry.centroid.x.mean()], zoom_start=15)
+            if field_bg_gdf is not None:
+                folium.GeoJson(field_bg_gdf, style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
+            for idx, row in res_gdf.iterrows():
+                group = strip_mappings[idx]
+                color = st.session_state.rs_group_colors.get(group, "#808080")
+                folium.GeoJson(row.geometry, style_function=lambda x, c=color: {'color': c, 'fillOpacity': 0.4, 'weight': 1},
+                               tooltip=f"{row['Name']} ({group})").add_to(m)
+            st_folium(m, width="100%", height=550, key="rs_map_preview")
+
+        # --- 7. EXPORT ---
+        st.divider()
+        if st.button("Generate KMZ", use_container_width=True, type="primary"):
+            kml = simplekml.Kml()
+            
+            if field_bg_gdf is not None:
+                for _, f_row in field_bg_gdf.iterrows():
+                    f_polys = [f_row.geometry] if f_row.geometry.geom_type == 'Polygon' else list(f_row.geometry.geoms)
+                    for p in f_polys:
+                        pol = kml.newpolygon(name=f"{st.session_state.tab7_field_name}")
+                        pol.outerboundaryis = list(p.exterior.coords)
+                        pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
+                        pol.style.linestyle.color = simplekml.Color.red
+                        pol.style.linestyle.width = 4
+                        pol.extendeddata.newdata("is_field_section", "False")
+
+            export_data = []
+            for idx, row in res_gdf.iterrows():
+                row_c = row.copy(); row_c["ExportGroup"] = strip_mappings[idx]
+                export_data.append(row_c)
+            export_gdf = gpd.GeoDataFrame(export_data, crs="EPSG:4326")
+
+            for group in st.session_state.rs_group_names:
+                group_gdf = export_gdf[export_gdf["ExportGroup"] == group]
+                if not group_gdf.empty:
+                    combined_geom = group_gdf.geometry.unary_union
+                    pol_geom = kml.newmultigeometry(name=group)
+                    geoms = [combined_geom] if combined_geom.geom_type == 'Polygon' else list(combined_geom.geoms)
+                    k_clr = hex_to_kml_color(st.session_state.rs_group_colors.get(group, "#FFFFFF"))
+                    for g in geoms:
+                        p = pol_geom.newpolygon(outerboundaryis=list(g.exterior.coords))
+                        p.style.polystyle.color = k_clr
+                        p.style.polystyle.fill = 1
+                        p.style.linestyle.color = k_clr
+                        p.style.linestyle.width = 2
+                    pol_geom.extendeddata.newdata("is_field_section", "True")
+                    pol_geom.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+
+            ungrouped = export_gdf[export_gdf["ExportGroup"] == "None"]
+            for _, row in ungrouped.iterrows():
+                p = kml.newpolygon(name=row["Name"], outerboundaryis=list(row.geometry.exterior.coords))
+                p.style.polystyle.color = hex_to_kml_color("#808080", opacity="40")
+                p.extendeddata.newdata("is_field_section", "True")
+                p.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+
+            kmz_out = f"{st.session_state.field_name}_Trial_Strips.kmz"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp:
+                kml.savekmz(tmp.name)
+                with open(tmp.name, "rb") as f:
+                    st.download_button("Download KMZ", data=f, file_name=kmz_out, use_container_width=True)
 
 
 elif selected_tool == "WS Tasking Helper":
