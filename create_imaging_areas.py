@@ -625,26 +625,46 @@ elif selected_tool == "Subsection Generator":
 
     processed_datasets = []
     if uploaded_files:
-        # --- 3. PROCESSING DATA ---
+        # --- 3. PROCESSING DATA (Finalized) ---
         datasets = [[f] for f in uploaded_files]
         for i, dataset_files in enumerate(datasets):
             try:
                 gdf = load_vector_file(dataset_files)
                 if gdf is not None and not gdf.empty:
+                    
+                    # --- FIX A: STRING SANITIZATION ---
+                    # This strips the '\n' found in your Prod report from all text columns
+                    for col in gdf.select_dtypes(include=['object']).columns:
+                        gdf[col] = gdf[col].astype(str).str.strip()
+
+                    # --- FIX B: GEOMETRY FLATTENING ---
+                    # Converts POLYGON Z to POLYGON (2D) to ensure spatial joins work in Prod
+                    if gdf.geometry.has_z.any():
+                        from shapely.ops import transform
+                        def to_2d(geom):
+                            if geom is None: return None
+                            return transform(lambda x, y, z=None: (x, y), geom)
+                        gdf["geometry"] = gdf["geometry"].apply(to_2d)
+
+                    # --- HIERARCHY LOGIC ---
                     potential_cols = ["Name", "name", "Field", "field", "Label", "label", "ID"]
                     target_col = next((c for c in potential_cols if c in gdf.columns), None)
                     
                     if target_col:
-                        gdf["Name"] = gdf[target_col].astype(str).replace(["nan", "None", ""], None)
-                        gdf["Name"] = [n if (n and n.strip() != "None") else f"Field_{j}" for j, n in enumerate(gdf["Name"])]
+                        # Clean up the specific Name column
+                        gdf["Name"] = gdf[target_col].replace(["nan", "None", ""], None)
+                        # Use a list comprehension to handle individual None values safely
+                        gdf["Name"] = [n if (n and n != "None") else f"Field_{j}" for j, n in enumerate(gdf["Name"])]
                     else:
                         gdf["Name"] = [f"Field_{j}" for j in range(len(gdf))]
                     
                     if gdf.crs != "EPSG:4326":
                         gdf = gdf.to_crs(epsg=4326)
 
+                    # Run your hierarchy detection on the cleaned data
                     gdf = infer_hierarchy(gdf, name_col="Name")
                     processed_datasets.append(gdf)
+
             except Exception as e:
                 st.error(f"Error loading KMZ {i+1}: {e}")
 
