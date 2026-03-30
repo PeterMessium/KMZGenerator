@@ -19,7 +19,7 @@ from shapely.affinity import rotate, translate
 import re
 import pandas as pd
 from datetime import datetime
-import sys
+
 
 # ----------------------------
 # APP CONFIG
@@ -682,14 +682,10 @@ elif selected_tool == "Subsection Generator":
 
             full_diag_text = "\n".join(diag_output)
             
-            # Robust environment detection
-            is_prod = "STREAMLIT_RUNTIME_ENV" in os.environ or "HOSTNAME" in os.environ
-            env_label = "prod" if is_prod else "local"
-
             st.download_button(
                 label="📥 Export Diagnostic Report",
                 data=full_diag_text,
-                file_name=f"diag_report_{env_label}.txt",
+                file_name=f"diag_report_{'prod' if 'streamlit' in st.get_option('server.address') else 'local'}.txt",
                 mime="text/plain",
                 use_container_width=True
             )
