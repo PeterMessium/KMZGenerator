@@ -760,8 +760,8 @@ elif selected_tool == "Subsection Generator":
                     if m_data and m_data["included"]:
                         row_copy = row.copy()
                         row_copy["Name"] = m_data["name"]
-                        row_copy["is_field_section"] = "True" if not is_top else ""
-                        row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else ""
+                        row_copy["is_field_section"] = "True" if not is_top else "null"
+                        row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else "null"
                         row_copy["ExportGroup"] = m_data.get("group", "None")
                         export_rows.append(row_copy)
                 
