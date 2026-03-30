@@ -19,6 +19,7 @@ from shapely.affinity import rotate, translate
 import re
 import pandas as pd
 from datetime import datetime
+import sys
 
 # ----------------------------
 # APP CONFIG
@@ -646,6 +647,54 @@ elif selected_tool == "Subsection Generator":
                     processed_datasets.append(gdf)
             except Exception as e:
                 st.error(f"Error loading KMZ {i+1}: {e}")
+
+    # --- DIAGNOSTIC EXPORT BUTTON ---
+    with st.expander("🛠️ Debug & Diagnostics"):
+        if uploaded_files and processed_datasets:
+            diag_output = []
+            diag_output.append("=== SYSTEM DIAGNOSTICS ===")
+            diag_output.append(f"Python Version: {sys.version}")
+            diag_output.append(f"Pandas Version: {pd.__version__}")
+            diag_output.append(f"GeoPandas Version: {gpd.__version__}")
+            
+            # Check for underlying C libraries (often the cause of spatial mismatches)
+            import pyproj, fiona, shapely
+            diag_output.append(f"Fiona Version: {fiona.__version__}")
+            diag_output.append(f"Shapely Version: {shapely.__version__}")
+            diag_output.append(f"PROJ Version: {pyproj.__version__}")
+            
+            for i, gdf in enumerate(processed_datasets):
+                diag_output.append(f"\n=== DATASET {i+1} DIAGNOSTICS ===")
+                diag_output.append(f"Rows: {len(gdf)}")
+                diag_output.append(f"CRS: {gdf.crs}")
+                diag_output.append(f"Columns Found: {list(gdf.columns)}")
+                diag_output.append("\n--- Column Data Types ---")
+                diag_output.append(gdf.dtypes.to_string())
+                
+                diag_output.append("\n--- Sample Data (First 5 Rows) ---")
+                # We convert to string to avoid encoding issues in the text file
+                diag_output.append(gdf.drop(columns='geometry').head().to_string())
+                
+                diag_output.append("\n--- Geometry Precision Check ---")
+                if not gdf.empty:
+                    diag_output.append(f"First Geometry Type: {gdf.geometry.iloc[0].geom_type}")
+                    diag_output.append(f"First Geometry Sample: {str(gdf.geometry.iloc[0])[:100]}...")
+
+            full_diag_text = "\n".join(diag_output)
+            
+            # Robust environment detection
+            is_prod = "STREAMLIT_RUNTIME_ENV" in os.environ or "HOSTNAME" in os.environ
+            env_label = "prod" if is_prod else "local"
+
+            st.download_button(
+                label="📥 Export Diagnostic Report",
+                data=full_diag_text,
+                file_name=f"diag_report_{env_label}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        else:
+            st.info("Upload a file first to generate diagnostics.")
 
     # --- 4. MAIN INTERFACE (Only shown if files are processed) ---
     if processed_datasets:
