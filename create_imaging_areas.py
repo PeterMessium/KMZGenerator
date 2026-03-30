@@ -569,28 +569,22 @@ elif selected_tool == "Subsection Generator":
     # --- 1. STYLING ---
     st.markdown("""
         <style>
-            /* This ensures only buttons in the MAIN area are affected, leaving the sidebar alone */
             [data-testid="stMain"] div.stButton button, 
             [data-testid="stMain"] div.stDownloadButton button {
                 width: 100% !important;
                 border-radius: 10px !important;
                 height: 3.5rem !important;
             }
-
             .block-container { 
                 max-width: 98% !important; 
                 padding-top: 5rem !important; 
                 padding-bottom: 1rem !important; 
             }
-
-            /* Keep your blue download button style but scope it to main area */
             [data-testid="stMain"] div.stDownloadButton button {
                 background-color: #1E3A8A !important; 
                 color: white !important;
             }
-
             div[data-testid="stBaseButton-secondary"] { margin-top: 28px !important; }
-            
             .column-header {
                 font-weight: bold;
                 font-size: 0.85rem;
@@ -603,9 +597,23 @@ elif selected_tool == "Subsection Generator":
 
     st.subheader("Subsection Generator")
     
-    # --- 2. GROUP STATE ---
+    # --- 2. STATE MANAGEMENT ---
     if "group_names" not in st.session_state:
         st.session_state.group_names = ["Messium", "Farm Standard", "Low", "High"]
+    
+    if "group_colors" not in st.session_state:
+        st.session_state.group_colors = {
+            "Messium": "#1E3A8A", 
+            "Farm Standard": "#10B981", 
+            "Low": "#F59E0B", 
+            "High": "#EF4444"
+        }
+
+    def hex_to_kml_color(hex_str, opacity="b3"):
+        """Converts #RRGGBB to KML's AABBGGRR format."""
+        hex_str = hex_str.lstrip('#')
+        r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+        return f"{opacity}{b}{g}{r}"
 
     uploaded_files = st.file_uploader(
         "Upload KMZ",
@@ -614,11 +622,10 @@ elif selected_tool == "Subsection Generator":
         key="tab4_upload"
     )
 
+    processed_datasets = []
     if uploaded_files:
         # --- 3. PROCESSING DATA ---
         datasets = [[f] for f in uploaded_files]
-        processed_datasets = []
-
         for i, dataset_files in enumerate(datasets):
             try:
                 gdf = load_vector_file(dataset_files)
@@ -640,9 +647,9 @@ elif selected_tool == "Subsection Generator":
             except Exception as e:
                 st.error(f"Error loading KMZ {i+1}: {e}")
 
+    # --- 4. MAIN INTERFACE (Only shown if files are processed) ---
+    if processed_datasets:
         dropdown_options = ["None"] + [g for g in st.session_state.group_names if g]
-
-        # --- 4. LAYOUT ---
         col_input, col_map = st.columns([1.5, 1.5]) 
         all_mappings = [] 
 
@@ -651,17 +658,14 @@ elif selected_tool == "Subsection Generator":
             container = st.container(height=600) 
             with container:
                 for d_idx, gdf in enumerate(processed_datasets):
-                    # "Dataset X" label removed as requested
                     ds_map = {"top": {}, "sub": {}}
                     top_levels = gdf[gdf["is_top_level"]]
                     
                     for _, row in top_levels.iterrows():
                         orig_name = row["Name"]
-                        # Main Field Input
                         new_name = st.text_input(f"Field: {orig_name}", value=orig_name, key=f"n_{d_idx}_t_{orig_name}")
                         ds_map["top"][orig_name] = {"name": new_name, "included": True}
                         
-                        # --- HEADERS MOVED UNDER FIELD ---
                         h_col1, h_col2, h_col3, h_col4 = st.columns([0.1, 1.7, 0.7, 1.5])
                         with h_col2: st.markdown('<p class="column-header">Subsection Name</p>', unsafe_allow_html=True)
                         with h_col3: st.markdown('<p class="column-header">Included</p>', unsafe_allow_html=True)
@@ -680,48 +684,73 @@ elif selected_tool == "Subsection Generator":
 
         with col_map:
             st.markdown("#### Map Preview")
-            if processed_datasets:
-                main_gdf = processed_datasets[0]
-                avg_lat, avg_lon = main_gdf.geometry.centroid.y.mean(), main_gdf.geometry.centroid.x.mean()
-                m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15)
-                
-                for d_idx, gdf in enumerate(processed_datasets):
-                    for idx, row in gdf.iterrows():
-                        is_top = row["is_top_level"]
-                        m_key = "top" if is_top else "sub"
-                        m_lookup = row["Name"] if is_top else idx
-                        m_data = all_mappings[d_idx][m_key].get(m_lookup)
-                        
-                        if m_data and m_data["included"]:
-                            color = "#1f77b4" if is_top else "#ff7f0e"
-                            label = m_data["name"] + (f" ({m_data['group']})" if not is_top and m_data['group'] != "None" else "")
-                            geom = row.geometry
-                            polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
-                            for p in polys:
-                                folium.Polygon(locations=[[pt[1], pt[0]] for pt in p.exterior.coords], color=color, fill=True, fill_opacity=0.3, weight=3 if is_top else 2, tooltip=label).add_to(m)
-                st_folium(m, width="100%", height=550)
+            main_gdf = processed_datasets[0]
+            avg_lat, avg_lon = main_gdf.geometry.centroid.y.mean(), main_gdf.geometry.centroid.x.mean()
+            m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15)
+            
+            for d_idx, gdf in enumerate(processed_datasets):
+                for idx, row in gdf.iterrows():
+                    is_top = row["is_top_level"]
+                    m_key = "top" if is_top else "sub"
+                    m_lookup = row["Name"] if is_top else idx
+                    m_data = all_mappings[d_idx][m_key].get(m_lookup)
+                    
+                    if m_data and m_data["included"]:
+                        group_name = m_data.get("group", "None")
+                        if is_top:
+                            color = "#1E3A8A"
+                        elif group_name != "None":
+                            color = st.session_state.group_colors.get(group_name, "#ff7f0e")
+                        else:
+                            color = "#ff7f0e"
+
+                        label = m_data["name"] + (f" ({group_name})" if group_name != "None" else "")
+                        geom = row.geometry
+                        polys = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+                        for p in polys:
+                            folium.Polygon(
+                                locations=[[pt[1], pt[0]] for pt in p.exterior.coords], 
+                                color=color, fill=True, fill_opacity=0.4, 
+                                weight=3 if is_top else 2, tooltip=label
+                            ).add_to(m)
+            st_folium(m, width="100%", height=550)
 
         # --- 5. GROUP MANAGER ---
         st.divider()
         st.markdown("#### 🛠️ Group Manager")
-        current_df = pd.DataFrame([{"Group Name": g} for g in st.session_state.group_names])
-        col_tbl, col_btn = st.columns([4, 1])
+        
+        group_df_data = [{"Group Name": g} for g in st.session_state.group_names]
+        current_df = pd.DataFrame(group_df_data)
+
+        col_tbl, col_clr = st.columns([2, 2])
         with col_tbl:
+            st.markdown('<p class="column-header">Edit Group Names</p>', unsafe_allow_html=True)
             edited_df = st.data_editor(current_df, num_rows="dynamic", use_container_width=True, key="group_editor")
-        with col_btn:
-            if st.button("Update Groups", use_container_width=True):
-                st.session_state.group_names = [g for g in edited_df["Group Name"].dropna().unique().tolist() if str(g).strip() != ""]
-                st.rerun()
+        
+        with col_clr:
+            st.markdown('<p class="column-header">Assign Colors</p>', unsafe_allow_html=True)
+            new_color_map = {}
+            picker_cols = st.columns(2) 
+            for idx, g_name in enumerate(st.session_state.group_names):
+                with picker_cols[idx % 2]:
+                    current_color = st.session_state.group_colors.get(g_name, "#7F7F7F")
+                    picked_color = st.color_picker(f"Color: {g_name}", value=current_color, key=f"cp_{g_name}")
+                    new_color_map[g_name] = picked_color
+
+        if st.button("Update Groups & Colors", use_container_width=True):
+            valid_names = [g for g in edited_df["Group Name"].dropna().unique().tolist() if str(g).strip() != ""]
+            st.session_state.group_names = valid_names
+            updated_colors = {name: new_color_map.get(name, st.session_state.group_colors.get(name, "#7F7F7F")) for name in valid_names}
+            st.session_state.group_colors = updated_colors
+            st.rerun()
 
         # --- 6. EXPORT LOGIC ---
         st.divider()
         if st.button("Generate Subsection-Enabled KMZ", use_container_width=True, type="primary"):
             output_generated = False
-            
             for d_idx, gdf in enumerate(processed_datasets):
                 kml = simplekml.Kml()
                 export_rows = []
-                
                 for idx, row in gdf.iterrows():
                     is_top = row["is_top_level"]
                     m_key = "top" if is_top else "sub"
@@ -732,62 +761,41 @@ elif selected_tool == "Subsection Generator":
                         row_copy = row.copy()
                         row_copy["Name"] = m_data["name"]
                         row_copy["is_field_section"] = "True" if not is_top else ""
-                        
-                        if not is_top:
-                            parent_orig_name = row["parent_field_name"]
-                            row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(parent_orig_name, {}).get("name", parent_orig_name)
-                        else:
-                            row_copy["parent_field_name"] = ""
-
+                        row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else ""
                         row_copy["ExportGroup"] = m_data.get("group", "None")
                         export_rows.append(row_copy)
                 
                 if export_rows:
                     working_gdf = gpd.GeoDataFrame(export_rows, crs=gdf.crs)
-                    ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"].reset_index(drop=True)
-                    grouped = working_gdf[working_gdf["ExportGroup"] != "None"].reset_index(drop=True)
+                    ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"]
+                    grouped = working_gdf[working_gdf["ExportGroup"] != "None"]
                     
-                    final_gdf_list = []
-                    if not ungrouped.empty: final_gdf_list.append(ungrouped)
-
+                    final_gdf_list = [ungrouped] if not ungrouped.empty else []
                     if not grouped.empty:
-                        dissolved = grouped.dissolve(by="ExportGroup", aggfunc={'Name': 'first', 'is_field_section': 'first', 'parent_field_name': 'first'})
-                        dissolved = dissolved.reset_index()
+                        dissolved = grouped.dissolve(by="ExportGroup", aggfunc={'Name': 'first', 'is_field_section': 'first', 'parent_field_name': 'first'}).reset_index()
                         dissolved["Name"] = dissolved["ExportGroup"] 
-                        dissolved = dissolved.drop(columns=["ExportGroup"]).reset_index(drop=True)
                         final_gdf_list.append(dissolved)
                     
-                    export_gdf = pd.concat(final_gdf_list, ignore_index=True).reset_index(drop=True)
-                    
+                    export_gdf = pd.concat(final_gdf_list, ignore_index=True)
                     for _, row in export_gdf.iterrows():
                         geom = row.geometry
-                        if geom.geom_type == 'Polygon':
-                            pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords))
-                        else:
-                            pol = kml.newmultigeometry(name=row["Name"])
-                            for part in geom.geoms:
-                                pol.newpolygon(outerboundaryis=list(part.exterior.coords))
+                        pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords)) if geom.geom_type == 'Polygon' else kml.newmultigeometry(name=row["Name"])
+                        if geom.geom_type != 'Polygon':
+                            for part in geom.geoms: pol.newpolygon(outerboundaryis=list(part.exterior.coords))
                         
+                        group_key = row.get("ExportGroup", "None")
+                        kml_color = hex_to_kml_color(st.session_state.group_colors.get(group_key, "#ffffff")) if group_key != "None" else hex_to_kml_color("#1E3A8A") if row["is_field_section"] == "" else "b3ffffff"
+                        pol.style.polystyle.color, pol.style.polystyle.fill = kml_color, 1
+                        pol.style.linestyle.color, pol.style.linestyle.width = kml_color, 2
                         pol.extendeddata.newdata("is_field_section", str(row["is_field_section"]))
                         pol.extendeddata.newdata("parent_field_name", str(row["parent_field_name"]))
 
                     kmz_path = f"export_{d_idx+1}.kmz"
                     kml.savekmz(kmz_path)
-                    
                     with open(kmz_path, "rb") as f:
-                        st.download_button(
-                            label="📥 Download Subsection-Enabled KMZ", 
-                            data=f, 
-                            file_name=kmz_path,
-                            key=f"dl_kmz_{d_idx}",
-                            use_container_width=True
-                        )
-                    
+                        st.download_button(label=f"📥 Download {kmz_path}", data=f, file_name=kmz_path, key=f"dl_kmz_{d_idx}", use_container_width=True)
                     output_generated = True
-
-            if not output_generated:
-                st.warning("No polygons selected.")
-
+            if not output_generated: st.warning("No polygons selected.")
 
 elif selected_tool == "Duplicate KMZs":
 
