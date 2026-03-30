@@ -657,7 +657,7 @@ elif selected_tool == "Subsection Generator":
             diag_output.append(f"Pandas Version: {pd.__version__}")
             diag_output.append(f"GeoPandas Version: {gpd.__version__}")
             
-            # Check for underlying C libraries (often the cause of spatial mismatches)
+            # Importing here to ensure we catch versions correctly
             import pyproj, fiona, shapely
             diag_output.append(f"Fiona Version: {fiona.__version__}")
             diag_output.append(f"Shapely Version: {shapely.__version__}")
@@ -672,25 +672,43 @@ elif selected_tool == "Subsection Generator":
                 diag_output.append(gdf.dtypes.to_string())
                 
                 diag_output.append("\n--- Sample Data (First 5 Rows) ---")
-                # We convert to string to avoid encoding issues in the text file
-                diag_output.append(gdf.drop(columns='geometry').head().to_string())
+                # Drop geometry for the text sample to keep the file readable
+                diag_cols = [c for c in gdf.columns if c != 'geometry']
+                diag_output.append(gdf[diag_cols].head().to_string())
                 
                 diag_output.append("\n--- Geometry Precision Check ---")
                 if not gdf.empty:
-                    diag_output.append(f"First Geometry Type: {gdf.geometry.iloc[0].geom_type}")
-                    diag_output.append(f"First Geometry Sample: {str(gdf.geometry.iloc[0])[:100]}...")
+                    first_geom = gdf.geometry.iloc[0]
+                    diag_output.append(f"First Geometry Type: {first_geom.geom_type}")
+                    diag_output.append(f"Has Z (3D): {first_geom.has_z}")
+                    diag_output.append(f"First Geometry Sample: {str(first_geom)[:150]}...")
 
             full_diag_text = "\n".join(diag_output)
+            
+            # --- CRASH-PROOF ENVIRONMENT CHECK ---
+            try:
+                server_addr = st.get_option('server.address')
+                # Check if server_addr exists AND is a string before checking 'streamlit'
+                is_prod = isinstance(server_addr, str) and 'streamlit' in server_addr
+            except:
+                is_prod = False
+                
+            # Secondary check: Streamlit Cloud usually sets this env var
+            if not is_prod:
+                is_prod = os.environ.get("STREAMLIT_RUNTIME_ENV") is not None
+            
+            env_label = "prod" if is_prod else "local"
             
             st.download_button(
                 label="📥 Export Diagnostic Report",
                 data=full_diag_text,
-                file_name=f"diag_report_{'prod' if 'streamlit' in st.get_option('server.address') else 'local'}.txt",
+                file_name=f"diag_report_{env_label}.txt",
                 mime="text/plain",
-                use_container_width=True
+                use_container_width=True,
+                key="diag_download_btn"
             )
         else:
-            st.info("Upload a file first to generate diagnostics.")
+            st.info("Upload a KMZ first to generate diagnostics.")
 
     # --- 4. MAIN INTERFACE (Only shown if files are processed) ---
     if processed_datasets:
