@@ -744,58 +744,85 @@ elif selected_tool == "Subsection Generator":
             st.session_state.group_colors = updated_colors
             st.rerun()
 
-        # --- 6. EXPORT LOGIC ---
-        st.divider()
-        if st.button("Generate Subsection-Enabled KMZ", use_container_width=True, type="primary"):
-            output_generated = False
-            for d_idx, gdf in enumerate(processed_datasets):
-                kml = simplekml.Kml()
-                export_rows = []
-                for idx, row in gdf.iterrows():
-                    is_top = row["is_top_level"]
-                    m_key = "top" if is_top else "sub"
-                    m_lookup = row["Name"] if is_top else idx
-                    m_data = all_mappings[d_idx][m_key].get(m_lookup)
+    # --- 6. EXPORT LOGIC (Cleaned) ---
+    st.divider()
+    if st.button("Generate Subsection-Enabled KMZ", use_container_width=True, type="primary"):
+        output_generated = False
+        for d_idx, gdf in enumerate(processed_datasets):
+            kml = simplekml.Kml()
+            export_rows = []
+            
+            for idx, row in gdf.iterrows():
+                is_top = row["is_top_level"]
+                m_key = "top" if is_top else "sub"
+                m_lookup = row["Name"] if is_top else idx
+                m_data = all_mappings[d_idx][m_key].get(m_lookup)
 
-                    if m_data and m_data["included"]:
-                        row_copy = row.copy()
-                        row_copy["Name"] = m_data["name"]
-                        row_copy["is_field_section"] = "True" if not is_top else "null"
-                        row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else "null"
-                        row_copy["ExportGroup"] = m_data.get("group", "None")
-                        export_rows.append(row_copy)
+                if m_data and m_data["included"]:
+                    row_copy = row.copy()
+                    # We only keep what we actually use
+                    row_copy["Name"] = m_data["name"]
+                    row_copy["is_field_section"] = "True" if not is_top else "null"
+                    row_copy["parent_field_name"] = all_mappings[d_idx]["top"].get(row["parent_field_name"], {}).get("name", row["parent_field_name"]) if not is_top else "null"
+                    row_copy["ExportGroup"] = m_data.get("group", "None")
+                    export_rows.append(row_copy)
+            
+            if export_rows:
+                working_gdf = gpd.GeoDataFrame(export_rows, crs=gdf.crs)
                 
-                if export_rows:
-                    working_gdf = gpd.GeoDataFrame(export_rows, crs=gdf.crs)
-                    ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"]
-                    grouped = working_gdf[working_gdf["ExportGroup"] != "None"]
-                    
-                    final_gdf_list = [ungrouped] if not ungrouped.empty else []
-                    if not grouped.empty:
-                        dissolved = grouped.dissolve(by="ExportGroup", aggfunc={'Name': 'first', 'is_field_section': 'first', 'parent_field_name': 'first'}).reset_index()
-                        dissolved["Name"] = dissolved["ExportGroup"] 
-                        final_gdf_list.append(dissolved)
-                    
+                # Separate into individual fields and grouped sections
+                ungrouped = working_gdf[working_gdf["ExportGroup"] == "None"]
+                grouped = working_gdf[working_gdf["ExportGroup"] != "None"]
+                
+                final_gdf_list = []
+                if not ungrouped.empty: final_gdf_list.append(ungrouped)
+                
+                if not grouped.empty:
+                    # Dissolve groups - this naturally strips old IDs/Styles
+                    dissolved = grouped.dissolve(by="ExportGroup", aggfunc={
+                        'Name': 'first', 
+                        'is_field_section': 'first', 
+                        'parent_field_name': 'first'
+                    }).reset_index()
+                    dissolved["Name"] = dissolved["ExportGroup"] 
+                    final_gdf_list.append(dissolved)
+                
+                if final_gdf_list:
                     export_gdf = pd.concat(final_gdf_list, ignore_index=True)
+                    
                     for _, row in export_gdf.iterrows():
                         geom = row.geometry
-                        pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords)) if geom.geom_type == 'Polygon' else kml.newmultigeometry(name=row["Name"])
-                        if geom.geom_type != 'Polygon':
-                            for part in geom.geoms: pol.newpolygon(outerboundaryis=list(part.exterior.coords))
+                        # simplekml handles the ID generation automatically
+                        if geom.geom_type == 'Polygon':
+                            pol = kml.newpolygon(name=row["Name"], outerboundaryis=list(geom.exterior.coords))
+                        else:
+                            pol = kml.newmultigeometry(name=row["Name"])
+                            for part in geom.geoms:
+                                pol.newpolygon(outerboundaryis=list(part.exterior.coords))
                         
+                        # Apply Dynamic Styling (No styleUrl needed)
                         group_key = row.get("ExportGroup", "None")
-                        kml_color = hex_to_kml_color(st.session_state.group_colors.get(group_key, "#ffffff")) if group_key != "None" else hex_to_kml_color("#1E3A8A") if row["is_field_section"] == "" else "b3ffffff"
-                        pol.style.polystyle.color, pol.style.polystyle.fill = kml_color, 1
-                        pol.style.linestyle.color, pol.style.linestyle.width = kml_color, 2
+                        raw_hex = st.session_state.group_colors.get(group_key, "#1E3A8A")
+                        kml_color = hex_to_kml_color(raw_hex)
+                        
+                        pol.style.polystyle.color = kml_color
+                        pol.style.polystyle.fill = 1
+                        pol.style.linestyle.color = kml_color
+                        pol.style.linestyle.width = 2
+                        
+                        # Standardized Metadata
                         pol.extendeddata.newdata("is_field_section", str(row["is_field_section"]))
                         pol.extendeddata.newdata("parent_field_name", str(row["parent_field_name"]))
 
+                    # Save and Download
                     kmz_path = f"export_{d_idx+1}.kmz"
                     kml.savekmz(kmz_path)
                     with open(kmz_path, "rb") as f:
                         st.download_button(label=f"📥 Download {kmz_path}", data=f, file_name=kmz_path, key=f"dl_kmz_{d_idx}", use_container_width=True)
                     output_generated = True
-            if not output_generated: st.warning("No polygons selected.")
+
+        if not output_generated: 
+            st.warning("No polygons selected.")
 
 elif selected_tool == "Duplicate KMZs":
 
