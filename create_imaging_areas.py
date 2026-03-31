@@ -1064,7 +1064,6 @@ elif selected_tool == "Polygon Frequency Map":
     except Exception as e:
         st.error(f"Error processing CSV: {e}")
 
-
 elif selected_tool == "Repeated Strip Generator":
 
     # --- 1. STYLING ---
@@ -1072,7 +1071,6 @@ elif selected_tool == "Repeated Strip Generator":
         <style>
             .block-container { max-width: 98% !important; padding-left: 1rem !important; padding-right: 1rem !important; padding-top: 2rem !important; }
             
-            /* Center-align the Header and Guide Link */
             .center-wrapper {
                 text-align: center;
                 width: 100%;
@@ -1093,7 +1091,6 @@ elif selected_tool == "Repeated Strip Generator":
             }
             .docs-link:hover { background-color: #4B5563; }
 
-            /* Primary Button Style (Red) */
             div.stButton > button[kind="primary"] { 
                 background-color: #ef4444 !important; 
                 color: white !important; 
@@ -1104,7 +1101,6 @@ elif selected_tool == "Repeated Strip Generator":
                 width: 100% !important;
             }
 
-            /* Gray out the button when disabled */
             div.stButton > button:disabled {
                 background-color: #374151 !important;
                 color: #9CA3AF !important;
@@ -1112,7 +1108,6 @@ elif selected_tool == "Repeated Strip Generator":
                 cursor: not-allowed !important;
             }
 
-            /* Download Button Style (Blue & Full Width) */
             div.stDownloadButton button { 
                 background-color: #1E3A8A !important; 
                 color: white !important; 
@@ -1135,7 +1130,8 @@ elif selected_tool == "Repeated Strip Generator":
         'field_name': "", 'strip_w': "", 'headland_b': 0.0,
         'f_t_lon': "", 'f_t_lat': "", 'f_b_lon': "", 'f_b_lat': "",
         'l_t_lon': "", 'l_t_lat': "", 'l_b_lon': "", 'l_b_lat': "",
-        'tab7_result_gdf': None, 'tab7_field_name': "", 'field_boundary_gdf': None
+        'tab7_result_gdf': None, 'tab7_field_name': "", 'field_boundary_gdf': None,
+        'uniform_length': False
     }
     for key, val in keys.items():
         if key not in st.session_state: st.session_state[key] = val
@@ -1145,7 +1141,7 @@ elif selected_tool == "Repeated Strip Generator":
         r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
         return f"{opacity}{b}{g}{r}"
 
-    # --- 3. HEADER & GUIDE LINK (Centered) ---
+    # --- 3. HEADER ---
     st.markdown("""
         <div class="center-wrapper">
             <h2 style="margin-bottom: 0px;">Repeated Strip Generator</h2>
@@ -1183,6 +1179,7 @@ elif selected_tool == "Repeated Strip Generator":
         st.text_input("Field Name", key="field_name")
         st.text_input("Tramline Width (m)", key="strip_w")
         st.number_input("Headland Buffer (m)", min_value=0.0, step=1.0, key="headland_b")
+        st.toggle("Uniform Strip Length", key="uniform_length")
 
     with col_coords:
         st.markdown("### 2. Alignment")
@@ -1212,8 +1209,10 @@ elif selected_tool == "Repeated Strip Generator":
                 utm_zone = int((avg_lon + 180) / 6) + 1
                 utm_crs = f"EPSG:{32600 + utm_zone if avg_lat >= 0 else 32700 + utm_zone}"
                 to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
+                
                 field_utm_full = field_gdf.to_crs(utm_crs).geometry.unary_union
-                field_utm_clipped = field_utm_full.buffer(-h_buffer) if h_buffer > 0 else field_utm_full
+                # Shrink field boundary by buffer first to create the "Safe Zone"
+                field_safe_zone = field_utm_full.buffer(-h_buffer) if h_buffer > 0 else field_utm_full
                 
                 p1_t = Point(to_utm(float(st.session_state.f_t_lon), float(st.session_state.f_t_lat)))
                 p1_b = Point(to_utm(float(st.session_state.f_b_lon), float(st.session_state.f_b_lat)))
@@ -1221,35 +1220,84 @@ elif selected_tool == "Repeated Strip Generator":
                 
                 angle_v = math.atan2(p1_b.y - p1_t.y, p1_b.x - p1_t.x)
                 angle_h = angle_v + (math.pi / 2)
+                
                 total_dist = ((p2_t.x - p1_t.x) * math.cos(angle_h)) + ((p2_t.y - p1_t.y) * math.sin(angle_h))
                 num_strips = int(round(abs(total_dist) / strip_width)) + 1
                 direction = 1 if total_dist > 0 else -1
                 
-                strips_list = []
-                c1_utm = LineString([p1_t, p1_b]).centroid
+                # Preliminary check: Get start/end for every lane relative to pivot_t
+                lane_candidates = []
                 for i in range(num_strips):
                     offset = i * strip_width * direction
-                    curr_cx, curr_cy = c1_utm.x + offset * math.cos(angle_h), c1_utm.y + offset * math.sin(angle_h)
-                    ext_len = 10000 
-                    p_u = (curr_cx - ext_len * math.cos(angle_v), curr_cy - ext_len * math.sin(angle_v))
-                    p_d = (curr_cx + ext_len * math.cos(angle_v), curr_cy + ext_len * math.sin(angle_v))
-                    strip_geom = LineString([p_u, p_d]).buffer(strip_width/2, cap_style=2, join_style=2)
-                    clipped = strip_geom.intersection(field_utm_clipped)
+                    pivot_t = Point(p1_t.x + offset * math.cos(angle_h), p1_t.y + offset * math.sin(angle_h))
                     
-                    if not clipped.is_empty and clipped.area > (strip_width * 80):
-                        strips_list.append({
-                            "Name": f"{st.session_state.field_name} - Strip {i+1}",
-                            "geometry": clipped,
-                            "parent_field_name": st.session_state.field_name,
-                            "width_m": strip_width,
-                            "is_field_section": "True"
-                        })
+                    line = LineString([
+                        (pivot_t.x - 5000 * math.cos(angle_v), pivot_t.y - 5000 * math.sin(angle_v)),
+                        (pivot_t.x + 5000 * math.cos(angle_v), pivot_t.y + 5000 * math.sin(angle_v))
+                    ])
+                    inter = line.intersection(field_safe_zone)
+                    if not inter.is_empty:
+                        if inter.geom_type == 'MultiLineString': inter = max(inter.geoms, key=lambda x: x.length)
+                        coords = list(inter.coords)
+                        dists = [(c[0]-pivot_t.x)*math.cos(angle_v) + (c[1]-pivot_t.y)*math.sin(angle_v) for c in coords]
+                        lane_candidates.append({"pivot_t": pivot_t, "d_min": min(dists), "d_max": max(dists), "idx": i})
+
+                if not lane_candidates:
+                    st.error("No valid strips found. Check alignment and buffer.")
+                    st.stop()
+
+                if st.session_state.uniform_length:
+                    # CALCULATE UNIVERSAL SAFE BOUNDS
+                    # We start with the most restrictive overlap
+                    current_s = max(l["d_min"] for l in lane_candidates)
+                    current_e = min(l["d_max"] for l in lane_candidates)
+                    
+                    # ITERATIVE SHRINKING: Ensure corners of the BUFFERS are inside the field
+                    # This prevents the diagonal clipping issue
+                    step = 0.5
+                    while current_s < current_e:
+                        all_safe = True
+                        for l in lane_candidates:
+                            # Create the candidate strip geometry
+                            p_s = (l["pivot_t"].x + current_s * math.cos(angle_v), l["pivot_t"].y + current_s * math.sin(angle_v))
+                            p_e = (l["pivot_t"].x + current_e * math.cos(angle_v), l["pivot_t"].y + current_e * math.sin(angle_v))
+                            strip_poly = LineString([p_s, p_e]).buffer(strip_width/2, cap_style=2, join_style=2)
+                            
+                            if not field_safe_zone.contains(strip_poly):
+                                all_safe = False
+                                break
+                        if all_safe: break
+                        current_s += step
+                        current_e -= step
+                    
+                    if current_s >= current_e:
+                        st.error("Uniform block is impossible with this buffer/shape.")
+                        st.stop()
+                    
+                    final_s, final_e = current_s, current_e
                 
-                if strips_list:
-                    st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
-                    st.session_state.tab7_field_name = st.session_state.field_name
-                    st.success(f"Generated {len(strips_list)} strips.")
-                    st.rerun()
+                # FINAL CONSTRUCTION
+                strips_list = []
+                for l in lane_candidates:
+                    s = final_s if st.session_state.uniform_length else l["d_min"]
+                    e = final_e if st.session_state.uniform_length else l["d_max"]
+                    
+                    p_s = (l["pivot_t"].x + s * math.cos(angle_v), l["pivot_t"].y + s * math.sin(angle_v))
+                    p_e = (l["pivot_t"].x + e * math.cos(angle_v), l["pivot_t"].y + e * math.sin(angle_v))
+                    
+                    geom = LineString([p_s, p_e]).buffer(strip_width/2, cap_style=2, join_style=2)
+                    strips_list.append({
+                        "Name": f"{st.session_state.field_name} - Strip {l['idx']+1}",
+                        "geometry": geom,
+                        "parent_field_name": st.session_state.field_name,
+                        "width_m": strip_width,
+                        "is_field_section": "True"
+                    })
+
+                st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
+                st.session_state.tab7_field_name = st.session_state.field_name
+                st.success(f"Generated {len(strips_list)} strips.")
+                st.rerun()
         except Exception as e: st.error(f"Error: {e}")
 
     # --- 6. GROUPING & PREVIEW ---
@@ -1345,8 +1393,7 @@ elif selected_tool == "Repeated Strip Generator":
                 kml.savekmz(tmp.name)
                 with open(tmp.name, "rb") as f:
                     st.download_button("Download KMZ", data=f, file_name=kmz_out, use_container_width=True)
-
-
+                    
 elif selected_tool == "WS Tasking Helper":
 
     # --- 1. STYLING ---
