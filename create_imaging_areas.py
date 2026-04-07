@@ -966,7 +966,6 @@ elif selected_tool == "Duplicate KMZs":
             st.error(f"Error: {e}")
 
 
-
 elif selected_tool == "Repeated Strip Generator":
 
     # --- 1. STYLING ---
@@ -1026,15 +1025,17 @@ elif selected_tool == "Repeated Strip Generator":
     # --- 2. SESSION STATE ---
     if "rs_group_names" not in st.session_state:
         st.session_state.rs_group_names = ["Messium", "Farm Standard"]
+    if "rs_rest_name" not in st.session_state:
+        st.session_state.rs_rest_name = "Rest of Field"
     if "rs_group_colors" not in st.session_state:
-        st.session_state.rs_group_colors = {"Messium": "#1E3A8A", "Farm Standard": "#10B981"}
+        st.session_state.rs_group_colors = {"Messium": "#1E3A8A", "Farm Standard": "#10B981", "Rest of Field": "#808080"}
     
     keys = {
         'field_name': "", 'strip_w': "", 'headland_b': 0.0,
         'f_t_lon': "", 'f_t_lat': "", 'f_b_lon': "", 'f_b_lat': "",
         'l_t_lon': "", 'l_t_lat': "", 'l_b_lon': "", 'l_b_lat': "",
         'tab7_result_gdf': None, 'tab7_field_name': "", 'field_boundary_gdf': None,
-        'uniform_length': False
+        'uniform_length': False, 'create_rest_of_field': False
     }
     for key, val in keys.items():
         if key not in st.session_state: st.session_state[key] = val
@@ -1083,6 +1084,7 @@ elif selected_tool == "Repeated Strip Generator":
         st.text_input("Tramline Width (m)", key="strip_w")
         st.number_input("Headland Buffer (m)", min_value=0.0, step=1.0, key="headland_b")
         st.toggle("Uniform Strip Length", key="uniform_length")
+        st.toggle(f"Create '{st.session_state.rs_rest_name}' subsection", key="create_rest_of_field")
 
     with col_coords:
         st.markdown("### 2. Alignment")
@@ -1114,7 +1116,6 @@ elif selected_tool == "Repeated Strip Generator":
                 to_utm = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True).transform
                 
                 field_utm_full = field_gdf.to_crs(utm_crs).geometry.unary_union
-                # Shrink field boundary by buffer first to create the "Safe Zone"
                 field_safe_zone = field_utm_full.buffer(-h_buffer) if h_buffer > 0 else field_utm_full
                 
                 p1_t = Point(to_utm(float(st.session_state.f_t_lon), float(st.session_state.f_t_lat)))
@@ -1128,16 +1129,12 @@ elif selected_tool == "Repeated Strip Generator":
                 num_strips = int(round(abs(total_dist) / strip_width)) + 1
                 direction = 1 if total_dist > 0 else -1
                 
-                # Preliminary check: Get start/end for every lane relative to pivot_t
                 lane_candidates = []
                 for i in range(num_strips):
                     offset = i * strip_width * direction
                     pivot_t = Point(p1_t.x + offset * math.cos(angle_h), p1_t.y + offset * math.sin(angle_h))
+                    line = LineString([(pivot_t.x - 5000 * math.cos(angle_v), pivot_t.y - 5000 * math.sin(angle_v)), (pivot_t.x + 5000 * math.cos(angle_v), pivot_t.y + 5000 * math.sin(angle_v))])
                     
-                    line = LineString([
-                        (pivot_t.x - 5000 * math.cos(angle_v), pivot_t.y - 5000 * math.sin(angle_v)),
-                        (pivot_t.x + 5000 * math.cos(angle_v), pivot_t.y + 5000 * math.sin(angle_v))
-                    ])
                     inter = line.intersection(field_safe_zone)
                     if not inter.is_empty:
                         if inter.geom_type == 'MultiLineString': inter = max(inter.geoms, key=lambda x: x.length)
@@ -1145,61 +1142,52 @@ elif selected_tool == "Repeated Strip Generator":
                         dists = [(c[0]-pivot_t.x)*math.cos(angle_v) + (c[1]-pivot_t.y)*math.sin(angle_v) for c in coords]
                         lane_candidates.append({"pivot_t": pivot_t, "d_min": min(dists), "d_max": max(dists), "idx": i})
 
-                if not lane_candidates:
-                    st.error("No valid strips found. Check alignment and buffer.")
-                    st.stop()
-
-                if st.session_state.uniform_length:
-                    # CALCULATE UNIVERSAL SAFE BOUNDS
-                    # We start with the most restrictive overlap
-                    current_s = max(l["d_min"] for l in lane_candidates)
-                    current_e = min(l["d_max"] for l in lane_candidates)
-                    
-                    # ITERATIVE SHRINKING: Ensure corners of the BUFFERS are inside the field
-                    # This prevents the diagonal clipping issue
-                    step = 0.5
-                    while current_s < current_e:
-                        all_safe = True
-                        for l in lane_candidates:
-                            # Create the candidate strip geometry
-                            p_s = (l["pivot_t"].x + current_s * math.cos(angle_v), l["pivot_t"].y + current_s * math.sin(angle_v))
-                            p_e = (l["pivot_t"].x + current_e * math.cos(angle_v), l["pivot_t"].y + current_e * math.sin(angle_v))
-                            strip_poly = LineString([p_s, p_e]).buffer(strip_width/2, cap_style=2, join_style=2)
-                            
-                            if not field_safe_zone.contains(strip_poly):
-                                all_safe = False
-                                break
-                        if all_safe: break
-                        current_s += step
-                        current_e -= step
-                    
-                    if current_s >= current_e:
-                        st.error("Uniform block is impossible with this buffer/shape.")
-                        st.stop()
-                    
-                    final_s, final_e = current_s, current_e
-                
-                # FINAL CONSTRUCTION
                 strips_list = []
+                all_strip_geoms_for_rest = []
                 for l in lane_candidates:
-                    s = final_s if st.session_state.uniform_length else l["d_min"]
-                    e = final_e if st.session_state.uniform_length else l["d_max"]
+                    s, e = l["d_min"], l["d_max"]
                     
-                    p_s = (l["pivot_t"].x + s * math.cos(angle_v), l["pivot_t"].y + s * math.sin(angle_v))
-                    p_e = (l["pivot_t"].x + e * math.cos(angle_v), l["pivot_t"].y + e * math.sin(angle_v))
+                    p_s_long = (l["pivot_t"].x + (s - 50) * math.cos(angle_v), l["pivot_t"].y + (s - 50) * math.sin(angle_v))
+                    p_e_long = (l["pivot_t"].x + (e + 50) * math.cos(angle_v), l["pivot_t"].y + (e + 50) * math.sin(angle_v))
                     
-                    geom = LineString([p_s, p_e]).buffer(strip_width/2, cap_style=2, join_style=2)
+                    lane_rect = LineString([p_s_long, p_e_long]).buffer(strip_width/2, cap_style=2, join_style=2)
+                    clipped_geom = lane_rect.intersection(field_safe_zone)
+                    
+                    if clipped_geom.geom_type == 'MultiPolygon':
+                        clipped_geom = max(clipped_geom.geoms, key=lambda x: x.area)
+
+                    all_strip_geoms_for_rest.append(clipped_geom)
+                    
                     strips_list.append({
-                        "Name": f"{st.session_state.field_name} - Strip {l['idx']+1}",
-                        "geometry": geom,
-                        "parent_field_name": st.session_state.field_name,
-                        "width_m": strip_width,
-                        "is_field_section": "True"
+                        "Name": f"{st.session_state.field_name} - Strip {l['idx']+1}", 
+                        "geometry": clipped_geom, 
+                        "parent_field_name": st.session_state.field_name, 
+                        "width_m": strip_width, 
+                        "is_field_section": "True", 
+                        "type": "strip"
                     })
+
+                if st.session_state.create_rest_of_field:
+                    combined_strips = unary_union(all_strip_geoms_for_rest).buffer(0.01, join_style=2)
+                    rest_geom = field_utm_full.difference(combined_strips)
+                    
+                    if not rest_geom.is_empty:
+                        if rest_geom.geom_type in ['MultiPolygon', 'GeometryCollection']:
+                            clean_polys = [p for p in rest_geom.geoms if p.geom_type == 'Polygon' and p.area > 5.0]
+                            rest_geom = unary_union(clean_polys) if clean_polys else None
+                        
+                        if rest_geom and not rest_geom.is_empty:
+                            strips_list.append({
+                                "Name": st.session_state.rs_rest_name, 
+                                "geometry": rest_geom, 
+                                "parent_field_name": st.session_state.field_name, 
+                                "width_m": 0.0, 
+                                "is_field_section": "True", 
+                                "type": "rest"
+                            })
 
                 st.session_state.tab7_result_gdf = gpd.GeoDataFrame(strips_list, crs=utm_crs).to_crs("EPSG:4326")
                 st.session_state.tab7_field_name = st.session_state.field_name
-                st.success(f"Generated {len(strips_list)} strips.")
                 st.rerun()
         except Exception as e: st.error(f"Error: {e}")
 
@@ -1208,7 +1196,6 @@ elif selected_tool == "Repeated Strip Generator":
         st.divider()
         res_gdf = st.session_state.tab7_result_gdf
         field_bg_gdf = st.session_state.field_boundary_gdf
-        
         col_group, col_preview = st.columns([1.2, 1.8])
         
         with col_group:
@@ -1219,16 +1206,26 @@ elif selected_tool == "Repeated Strip Generator":
             with assign_container:
                 for idx, row in res_gdf.iterrows():
                     c1, c2 = st.columns([1, 1.5])
-                    c1.markdown(f"**Strip {idx+1}**")
-                    strip_mappings[idx] = c2.selectbox(f"Grp_{idx}", options=group_options, label_visibility="collapsed", key=f"rs_map_{idx}")
+                    # If this is the "Rest" row, allow editing the label text directly
+                    if row['type'] == 'rest':
+                        c1.text_input("Rest Name", value=st.session_state.rs_rest_name, key="rs_rest_name", label_visibility="collapsed")
+                        c2.markdown("*(No Grouping Available)*")
+                        strip_mappings[idx] = "Rest of Field" # Fixed mapping for rest
+                    else:
+                        c1.markdown(f"**{row['Name']}**")
+                        strip_mappings[idx] = c2.selectbox(f"Grp_{idx}", options=group_options, label_visibility="collapsed", key=f"rs_map_{idx}")
 
             st.markdown("#### Edit Group Names")
             g_df = pd.DataFrame([{"Group Name": g} for g in st.session_state.rs_group_names])
             edited_g = st.data_editor(g_df, num_rows="dynamic", use_container_width=True, key="rs_g_editor")
+            
             cp1, cp2 = st.columns(2)
             for i, g_name in enumerate(st.session_state.rs_group_names):
                 with cp1 if i % 2 == 0 else cp2:
                     st.session_state.rs_group_colors[g_name] = st.color_picker(g_name, st.session_state.rs_group_colors.get(g_name, "#7F7F7F"), key=f"cp_rs_{g_name}")
+            
+            if "rest" in res_gdf['type'].values:
+                st.session_state.rs_group_colors["Rest of Field"] = st.color_picker(f"{st.session_state.rs_rest_name} Color", st.session_state.rs_group_colors.get("Rest of Field", "#808080"), key="cp_rs_rest")
 
             if st.button("Update Group Settings"):
                 st.session_state.rs_group_names = [x for x in edited_g["Group Name"].tolist() if x]
@@ -1241,9 +1238,9 @@ elif selected_tool == "Repeated Strip Generator":
                 folium.GeoJson(field_bg_gdf, style_function=lambda x: {'color': 'red', 'fillOpacity': 0, 'weight': 3}).add_to(m)
             for idx, row in res_gdf.iterrows():
                 group = strip_mappings[idx]
-                color = st.session_state.rs_group_colors.get(group, "#808080")
-                folium.GeoJson(row.geometry, style_function=lambda x, c=color: {'color': c, 'fillOpacity': 0.4, 'weight': 1},
-                               tooltip=f"{row['Name']} ({group})").add_to(m)
+                color = st.session_state.rs_group_colors.get("Rest of Field" if row['type'] == 'rest' else group, "#808080")
+                tooltip_name = st.session_state.rs_rest_name if row['type'] == 'rest' else row['Name']
+                folium.GeoJson(row.geometry, style_function=lambda x, c=color: {'color': c, 'fillOpacity': 0.4, 'weight': 1}, tooltip=tooltip_name).add_to(m)
             st_folium(m, width="100%", height=550, key="rs_map_preview")
 
         # --- 7. EXPORT ---
@@ -1251,6 +1248,7 @@ elif selected_tool == "Repeated Strip Generator":
         if st.button("Generate KMZ", use_container_width=True, type="primary"):
             kml = simplekml.Kml()
             
+            # 1. Field Boundary
             if field_bg_gdf is not None:
                 for _, f_row in field_bg_gdf.iterrows():
                     f_polys = [f_row.geometry] if f_row.geometry.geom_type == 'Polygon' else list(f_row.geometry.geoms)
@@ -1262,14 +1260,12 @@ elif selected_tool == "Repeated Strip Generator":
                         pol.style.linestyle.width = 4
                         pol.extendeddata.newdata("is_field_section", "False")
 
-            export_data = []
-            for idx, row in res_gdf.iterrows():
-                row_c = row.copy(); row_c["ExportGroup"] = strip_mappings[idx]
-                export_data.append(row_c)
-            export_gdf = gpd.GeoDataFrame(export_data, crs="EPSG:4326")
+            export_gdf = res_gdf.copy()
+            export_gdf["ExportGroup"] = [strip_mappings[i] for i in export_gdf.index]
 
+            # 2. Grouped Strips
             for group in st.session_state.rs_group_names:
-                group_gdf = export_gdf[export_gdf["ExportGroup"] == group]
+                group_gdf = export_gdf[(export_gdf["ExportGroup"] == group) & (export_gdf["type"] == "strip")]
                 if not group_gdf.empty:
                     combined_geom = group_gdf.geometry.unary_union
                     pol_geom = kml.newmultigeometry(name=group)
@@ -1277,14 +1273,29 @@ elif selected_tool == "Repeated Strip Generator":
                     k_clr = hex_to_kml_color(st.session_state.rs_group_colors.get(group, "#FFFFFF"))
                     for g in geoms:
                         p = pol_geom.newpolygon(outerboundaryis=list(g.exterior.coords))
+                        if hasattr(g, 'interiors'): p.innerboundaryis = [list(i.coords) for i in g.interiors]
                         p.style.polystyle.color = k_clr
-                        p.style.polystyle.fill = 1
                         p.style.linestyle.color = k_clr
-                        p.style.linestyle.width = 2
                     pol_geom.extendeddata.newdata("is_field_section", "True")
                     pol_geom.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
 
-            ungrouped = export_gdf[export_gdf["ExportGroup"] == "None"]
+            # 3. Rest of Field
+            rest_row = export_gdf[export_gdf["type"] == "rest"]
+            if not rest_row.empty:
+                row = rest_row.iloc[0]
+                rest_kml_obj = kml.newmultigeometry(name=st.session_state.rs_rest_name)
+                rest_clr = hex_to_kml_color(st.session_state.rs_group_colors.get("Rest of Field", "#808080"), opacity="60")
+                geoms = [row.geometry] if row.geometry.geom_type == 'Polygon' else list(row.geometry.geoms)
+                for g in geoms:
+                    p = rest_kml_obj.newpolygon(outerboundaryis=list(g.exterior.coords))
+                    if hasattr(g, 'interiors'): p.innerboundaryis = [list(i.coords) for i in g.interiors]
+                    p.style.polystyle.color = rest_clr
+                    p.style.linestyle.color = rest_clr
+                rest_kml_obj.extendeddata.newdata("is_field_section", "True")
+                rest_kml_obj.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+
+            # 4. Ungrouped Strips
+            ungrouped = export_gdf[(export_gdf["ExportGroup"] == "None") & (export_gdf["type"] == "strip")]
             for _, row in ungrouped.iterrows():
                 p = kml.newpolygon(name=row["Name"], outerboundaryis=list(row.geometry.exterior.coords))
                 p.style.polystyle.color = hex_to_kml_color("#808080", opacity="40")
