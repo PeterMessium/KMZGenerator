@@ -20,6 +20,7 @@ import re
 import pandas as pd
 from datetime import datetime
 import sys
+import shapely.wkt # Ensure this is at the top of your file
 
 # ----------------------------
 # APP CONFIG
@@ -57,7 +58,7 @@ nav_button("Repeated Strip Generator", "Repeated Strip Generator", poly_expander
 
 # Section 2: Satellite Tasking
 task_expander = st.sidebar.expander("Satellite Tasking Tools", expanded=True)
-nav_button("Image Frequency Map", "Polygon Frequency Map", task_expander)
+nav_button("Satellite Insights Map", "Satellite Insights Map", task_expander)
 nav_button("OC Tasking AOI Generator", "OC Tasking AOI Generator", task_expander)
 nav_button("WS Tasking Helper", "WS Tasking Helper", task_expander)
 
@@ -966,104 +967,6 @@ elif selected_tool == "Duplicate KMZs":
 
 
 
-elif selected_tool == "Polygon Frequency Map":
-
-    st.subheader("Visualise Polygon Image Frequency with Layers and Scaled Colours")
-
-    try:
-        # Load CSV from local folder
-        csv_path = "polygon_frequency.csv"
-        df = pd.read_csv(csv_path)
-
-        required_cols = {"Polygon", "Num of Images", "Geometry"}
-        if not required_cols.issubset(df.columns):
-            st.error(f"CSV must contain columns: {', '.join(required_cols)}")
-        else:
-            st.success(f"CSV loaded successfully with {len(df)} polygons.")
-
-            import shapely.wkt
-            import branca.colormap as cm
-
-            # Convert WKT to shapely geometries
-            df["geometry"] = df["Geometry"].apply(shapely.wkt.loads)
-            gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
-
-            # Compute mean lat/lon for map center
-            centroids = gdf.geometry.centroid
-            mean_lat = centroids.y.mean()
-            mean_lon = centroids.x.mean()
-
-            # Determine max number of images for scaling
-            max_images = gdf["Num of Images"].max()
-
-            # Linear colour scale from red (0) → yellow → green (max)
-            colormap = cm.LinearColormap(["red", "yellow", "green"], vmin=0, vmax=max_images)
-            colormap.caption = "Number of Images"
-
-            # Initialise folium map
-            m = folium.Map(location=[mean_lat, mean_lon], zoom_start=6)
-
-            # Define the four layer groups
-            layers = {
-                "Core NE->SW": folium.FeatureGroup(name="Core NE->SW", show=True),
-                "Core SE->NW": folium.FeatureGroup(name="Core SE->NW", show=True),
-                "Expanded NE->SW": folium.FeatureGroup(name="Expanded NE->SW", show=True),
-                "Expanded SE->NW": folium.FeatureGroup(name="Expanded SE->NW", show=True)
-            }
-
-            # Add polygons to the correct layer
-            for _, row in gdf.iterrows():
-                geom = row.geometry
-                polygons = [geom] if geom.geom_type == "Polygon" else geom.geoms
-
-                # Robust layer classification: Expanded takes priority over Core
-                if "Expanded" in row["Polygon"]:
-                    if "NE->SW" in row["Polygon"]:
-                        layer_name = "Expanded NE->SW"
-                    elif "SE->NW" in row["Polygon"]:
-                        layer_name = "Expanded SE->NW"
-                    else:
-                        layer_name = None
-                elif "Core" in row["Polygon"]:
-                    if "NE->SW" in row["Polygon"]:
-                        layer_name = "Core NE->SW"
-                    elif "SE->NW" in row["Polygon"]:
-                        layer_name = "Core SE->NW"
-                    else:
-                        layer_name = None
-                else:
-                    layer_name = None  # skip polygons that don't match any category
-
-                if layer_name is None:
-                    continue
-
-                for poly in polygons:
-                    coords = [[y, x] for x, y, *rest in poly.exterior.coords]  # ignore Z
-                    folium.Polygon(
-                        locations=coords,
-                        color=colormap(row["Num of Images"]),
-                        weight=3,
-                        fill=True,
-                        fill_opacity=0.5,
-                        popup=f"{row['Polygon']}<br>Images: {row['Num of Images']}",
-                        tooltip=row["Polygon"]
-                    ).add_to(layers[layer_name])
-
-            # Add all layers to the map
-            for lg in layers.values():
-                lg.add_to(m)
-
-            # Add layer control and colour legend
-            folium.LayerControl().add_to(m)
-            colormap.add_to(m)
-
-            st_folium(m, width="100%", height=600)
-
-    except FileNotFoundError:
-        st.error(f"File 'polygon_frequency.csv' not found in the current folder.")
-    except Exception as e:
-        st.error(f"Error processing CSV: {e}")
-
 elif selected_tool == "Repeated Strip Generator":
 
     # --- 1. STYLING ---
@@ -1601,3 +1504,124 @@ elif selected_tool == "WS Tasking Helper":
             type="primary",
             use_container_width=True
         )
+
+
+elif selected_tool == "Satellite Insights Map":
+    st.title("🛰️ Satellite Insights Map")
+
+    # 1. Load Data
+    try:
+        df = pd.read_csv("insights_num.csv")
+        df.columns = df.columns.str.strip()
+        
+        # Load Polygons CSV
+        poly_df = pd.read_csv("polygons.csv")
+        poly_df.columns = poly_df.columns.str.strip()
+    except Exception as e:
+        st.error(f"Error loading CSV files: {e}")
+        st.stop()
+
+    # 2. Filters & Layer Toggles
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected_insights = st.multiselect(
+            "Filter by Number of Insights:",
+            options=sorted(df["Insights"].unique()),
+            default=sorted(df["Insights"].unique())
+        )
+    with col2:
+        st.markdown("**Map Layers**")
+        show_core = st.toggle("Show Core Polygons", value=False)
+        show_expanded = st.toggle("Show Expanded Polygons", value=False)
+    
+    filtered_df = df[df["Insights"].isin(selected_insights)]
+
+    # 3. Success-Oriented Color Mapping
+    def get_color(val):
+        if val == 0: return "#8B0000" 
+        if val == 1: return "#FFD700" 
+        if val == 2: return "#76D100" 
+        if val == 3: return "#32CD32" 
+        return "#008000"
+
+    # 4. Create the Map
+    if not filtered_df.empty:
+        avg_lat = filtered_df["Latitude"].mean()
+        avg_lon = filtered_df["Longitude"].mean()
+        
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6, control_scale=True)
+
+        # --- A. Draw Tasking Polygons (Layers) ---
+        for _, p_row in poly_df.iterrows():
+            p_name = str(p_row['Polygon'])
+            is_core = p_name.startswith("Core")
+            is_expanded = p_name.startswith("Expanded")
+            
+            # Determine if we should draw based on toggles
+            if (is_core and show_core) or (is_expanded and show_expanded):
+                try:
+                    # Parse WKT (Handles the POLYGON Z format)
+                    geom = shapely.wkt.loads(p_row['Geometry'])
+                    
+                    # Style based on type
+                    color = "#1f77b4" if is_core else "#9467bd" # Blue for Core, Purple for Expanded
+                    dash = "1" if is_core else "5, 5" # Solid for Core, Dashed for Expanded
+                    
+                    # Folium expects [lat, lon]
+                    coords = [[p[1], p[0]] for p in geom.exterior.coords]
+                    
+                    folium.Polygon(
+                        locations=coords,
+                        popup=p_name,
+                        tooltip=p_name,
+                        color=color,
+                        weight=2,
+                        fill=True,
+                        fill_opacity=0.1,
+                        dash_array=dash
+                    ).add_to(m)
+                except Exception as e:
+                    continue
+
+        # --- B. Draw Farm Points ---
+        for _, row in filtered_df.iterrows():
+            folium.CircleMarker(
+                location=[row["Latitude"], row["Longitude"]],
+                radius=4.5, 
+                color="white",
+                weight=0.5,
+                fill=True,
+                fill_color=get_color(row["Insights"]),
+                fill_opacity=0.9,
+                popup=folium.Popup(f"<b>Farm ID:</b> {row['Farm ID']}<br><b>Insights:</b> {row['Insights']}", max_width=200),
+                tooltip=f"Farm {row['Farm ID']}"
+            ).add_to(m)
+
+        # 5. Legend
+        legend_html = f"""
+             <div style="
+             position: fixed; 
+             bottom: 50px; left: 50px; width: 140px; height: 135px; 
+             background-color: rgba(255, 255, 255, 0.95); 
+             border: 2px solid #555; z-index: 9999; font-size: 11px;
+             padding: 10px; border-radius: 8px; color: #000000;
+             font-family: sans-serif; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+             ">
+             <b style="display: block; margin-bottom: 8px;">Insights Progress</b>
+             <i style="background: {get_color(0)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 0 (None)<br>
+             <i style="background: {get_color(1)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 1 Insight<br>
+             <i style="background: {get_color(2)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 2 Insights<br>
+             <i style="background: {get_color(3)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 3 Insights<br>
+             <i style="background: {get_color(4)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 4+ Insights
+             </div>
+        """
+        m.get_root().html.add_child(folium.Element(legend_html))
+
+        st_folium(m, width="100%", height=700)
+        st.write(f"Showing **{len(filtered_df)}** farms out of {len(df)} total.")
+        
+        with st.expander("📂 View Filtered Data Table"):
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+            
+    else:
+        st.warning("No data matches the selected filters.")
