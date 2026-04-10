@@ -1518,36 +1518,76 @@ elif selected_tool == "WS Tasking Helper":
 
 
 elif selected_tool == "Satellite Insights Map":
-    st.title("🛰️ Satellite Insights Map")
+    # 1. Radical UI Refresh via CSS
+    st.markdown("""
+        <style>
+        /* Modern Control Bar Styling */
+        .control-panel {
+            background-color: #1E1E1E;
+            padding: 1.5rem;
+            border-radius: 10px;
+            border: 1px solid #333;
+            margin-bottom: 1rem;
+        }
+        /* Fix Toggle Spacing */
+        .stElementContainer div[data-testid="stCheckbox"] {
+            padding-top: 5px;
+            padding-bottom: 5px;
+        }
+        /* Custom Header for Map */
+        .map-header {
+            font-size: 34px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-    # 1. Load Data
+    st.markdown('<div class="map-header">🛰️ Satellite Insights Map</div>', unsafe_allow_html=True)
+
+    # 2. Functional Data Loading
     try:
         df = pd.read_csv("insights_num.csv")
         df.columns = df.columns.str.strip()
-        
-        # Load Polygons CSV
         poly_df = pd.read_csv("polygons.csv")
         poly_df.columns = poly_df.columns.str.strip()
     except Exception as e:
         st.error(f"Error loading CSV files: {e}")
         st.stop()
 
-    # 2. Filters & Layer Toggles
-    col1, col2 = st.columns([2, 1])
-    with col1:
+    # 3. New "Control Bar" UI Layout
+    # This layout wraps the filters in a single organized row
+    with st.container():
+        # Top Row: Primary Filter
         selected_insights = st.multiselect(
             "Filter by Number of Insights:",
             options=sorted(df["Insights"].unique()),
-            default=sorted(df["Insights"].unique())
+            default=sorted(df["Insights"].unique()),
+            help="Select the insight counts you want to visualize on the map."
         )
-    with col2:
-        st.markdown("**Map Layers**")
-        show_core = st.toggle("Show Core Polygons", value=False)
-        show_expanded = st.toggle("Show Expanded Polygons", value=False)
-    
-    filtered_df = df[df["Insights"].isin(selected_insights)]
 
-    # 3. Success-Oriented Color Mapping
+        # Bottom Row: Information & Layer Toggles
+        c1, c2, c3 = st.columns([1, 1, 1.5])
+        
+        with c1:
+            st.caption("Core Imaging Areas")
+            show_core = st.toggle("UK Core Polygons", value=False)
+        
+        with c2:
+            st.caption("Expanded Imaging Areas")
+            show_expanded = st.toggle("UK Expanded Polygons", value=False)
+            
+        with c3:
+            # Dynamic status metric
+            filtered_df = df[df["Insights"].isin(selected_insights)]
+            st.metric("Total Farms Tasked", f"{len(filtered_df)}")
+
+    st.divider()
+
+    # 4. Success-Oriented Color Mapping
     def get_color(val):
         if val == 0: return "#8B0000" 
         if val == 1: return "#FFD700" 
@@ -1555,7 +1595,7 @@ elif selected_tool == "Satellite Insights Map":
         if val == 3: return "#32CD32" 
         return "#008000"
 
-    # 4. Create the Map
+    # 5. Create the Map
     if not filtered_df.empty:
         avg_lat = filtered_df["Latitude"].mean()
         avg_lon = filtered_df["Longitude"].mean()
@@ -1568,17 +1608,11 @@ elif selected_tool == "Satellite Insights Map":
             is_core = p_name.startswith("Core")
             is_expanded = p_name.startswith("Expanded")
             
-            # Determine if we should draw based on toggles
             if (is_core and show_core) or (is_expanded and show_expanded):
                 try:
-                    # Parse WKT (Handles the POLYGON Z format)
                     geom = shapely.wkt.loads(p_row['Geometry'])
-                    
-                    # Style based on type
-                    color = "#1f77b4" if is_core else "#9467bd" # Blue for Core, Purple for Expanded
-                    dash = "1" if is_core else "5, 5" # Solid for Core, Dashed for Expanded
-                    
-                    # Folium expects [lat, lon]
+                    color = "#1f77b4" if is_core else "#9467bd"
+                    dash = "1" if is_core else "5, 5"
                     coords = [[p[1], p[0]] for p in geom.exterior.coords]
                     
                     folium.Polygon(
@@ -1591,7 +1625,7 @@ elif selected_tool == "Satellite Insights Map":
                         fill_opacity=0.1,
                         dash_array=dash
                     ).add_to(m)
-                except Exception as e:
+                except:
                     continue
 
         # --- B. Draw Farm Points ---
@@ -1608,30 +1642,29 @@ elif selected_tool == "Satellite Insights Map":
                 tooltip=f"Farm {row['Farm ID']}"
             ).add_to(m)
 
-        # 5. Legend
+        # 6. Legend (Enhanced Styling)
         legend_html = f"""
              <div style="
              position: fixed; 
              bottom: 50px; left: 50px; width: 140px; height: 135px; 
-             background-color: rgba(255, 255, 255, 0.95); 
-             border: 2px solid #555; z-index: 9999; font-size: 11px;
-             padding: 10px; border-radius: 8px; color: #000000;
-             font-family: sans-serif; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+             background-color: rgba(30, 30, 30, 0.9); 
+             border: 1px solid #555; z-index: 9999; font-size: 11px;
+             padding: 10px; border-radius: 8px; color: #FFFFFF;
+             font-family: sans-serif; box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
              ">
              <b style="display: block; margin-bottom: 8px;">Insights Progress</b>
-             <i style="background: {get_color(0)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 0 (None)<br>
-             <i style="background: {get_color(1)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 1 Insight<br>
-             <i style="background: {get_color(2)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 2 Insights<br>
-             <i style="background: {get_color(3)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 3 Insights<br>
-             <i style="background: {get_color(4)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%; border: 1px solid #333;"></i> 4+ Insights
+             <i style="background: {get_color(0)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 0 (None)<br>
+             <i style="background: {get_color(1)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 1 Insight<br>
+             <i style="background: {get_color(2)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 2 Insights<br>
+             <i style="background: {get_color(3)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 3 Insights<br>
+             <i style="background: {get_color(4)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 4+ Insights
              </div>
         """
         m.get_root().html.add_child(folium.Element(legend_html))
 
-        st_folium(m, width="100%", height=700)
-        st.write(f"Showing **{len(filtered_df)}** farms out of {len(df)} total.")
+        st_folium(m, use_container_width=True, height=700)
         
-        with st.expander("📂 View Filtered Data Table"):
+        with st.expander("📂 View Data Table"):
             st.dataframe(filtered_df, use_container_width=True, hide_index=True)
             
     else:
