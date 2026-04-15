@@ -1518,154 +1518,193 @@ elif selected_tool == "WS Tasking Helper":
 
 
 elif selected_tool == "Satellite Insights Map":
-    # 1. Radical UI Refresh via CSS
+    # 1. UI Refresh via CSS - Using your professional wide-screen styling
     st.markdown("""
         <style>
-        /* Modern Control Bar Styling */
-        .control-panel {
-            background-color: #1E1E1E;
-            padding: 1.5rem;
-            border-radius: 10px;
-            border: 1px solid #333;
-            margin-bottom: 1rem;
-        }
-        /* Fix Toggle Spacing */
-        .stElementContainer div[data-testid="stCheckbox"] {
-            padding-top: 5px;
-            padding-bottom: 5px;
-        }
-        /* Custom Header for Map */
-        .map-header {
-            font-size: 34px;
-            font-weight: bold;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+            /* Global Page Width */
+            .block-container {
+                max-width: 98% !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+            
+            /* Professional Header Offset */
+            .map-header {
+                font-size: 32px;
+                font-weight: 700;
+                margin-bottom: 20px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            /* Fix Multiselect wrapping and spacing */
+            .stMultiSelect div[role="listbox"] {
+                overflow-wrap: normal !important;
+            }
+            .stMultiSelect span {
+                font-size: 13px !important;
+            }
+            
+            /* Clean up the sidebar filter labels */
+            [data-testid="stVerticalBlock"] > div:has(div.stMultiSelect) {
+                margin-bottom: -10px;
+            }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="map-header">🛰️ Satellite Insights Map</div>', unsafe_allow_html=True)
 
-    # 2. Functional Data Loading
+    # 2. Functional Data Loading & Preprocessing
     try:
         df = pd.read_csv("insights_num.csv")
         df.columns = df.columns.str.strip()
+        df["Recent Date"] = pd.to_datetime(df["Recent Date"], errors='coerce')
+        
+        def categorize_recency(d):
+            if pd.isna(d): return "No Images"
+            days = (datetime.now() - d).days
+            if days > 21: return "> 21 Days Old"
+            if 10 <= days <= 21: return "10 - 21 Days Old"
+            return "< 10 Days (Recent)"
+        
+        df["Recency Category"] = df["Recent Date"].apply(categorize_recency)
         poly_df = pd.read_csv("polygons.csv")
         poly_df.columns = poly_df.columns.str.strip()
     except Exception as e:
         st.error(f"Error loading CSV files: {e}")
         st.stop()
 
-    # 3. New "Control Bar" UI Layout
-    # This layout wraps the filters in a single organized row
-    with st.container():
-        # Top Row: Primary Filter
+    # 3. Layout: Map and Sidebar with improved Ratios
+    main_col, side_panel = st.columns([4, 1], gap="large")
+
+    with side_panel:
+        st.write("### Filters")
+        
         selected_insights = st.multiselect(
-            "Filter by Number of Insights:",
+            "Insights Count:",
             options=sorted(df["Insights"].unique()),
-            default=sorted(df["Insights"].unique()),
-            help="Select the insight counts you want to visualize on the map."
+            default=sorted(df["Insights"].unique())
         )
-
-        # Bottom Row: Information & Layer Toggles
-        c1, c2, c3 = st.columns([1, 1, 1.5])
         
+        recency_options = ["< 10 Days (Recent)", "10 - 21 Days Old", "> 21 Days Old", "No Images"]
+        selected_recency = st.multiselect(
+            "Recency Status:",
+            options=recency_options,
+            default=recency_options
+        )
+        
+        st.markdown("---")
+        st.write("### Layers")
+        show_core = st.toggle("UK Core Polygons", value=False)
+        show_expanded = st.toggle("UK Expanded Polygons", value=False)
+        
+        # Filter Logic
+        filtered_df = df[
+            (df["Insights"].isin(selected_insights)) & 
+            (df["Recency Category"].isin(selected_recency))
+        ]
+        
+        st.markdown("---")
+        st.metric("Total Farms Displayed", len(filtered_df))
+        st.caption(f"Current Date: {datetime.now().strftime('%Y-%m-%d')}")
+
+    with main_col:
+        # Map Mode Buttons
+        c1, c2, _ = st.columns([1, 1, 2.5])
         with c1:
-            st.caption("Core Imaging Areas")
-            show_core = st.toggle("UK Core Polygons", value=False)
-        
+            is_freq = st.button("📊 Frequency Map", use_container_width=True, type="primary" if "map_mode" not in st.session_state or st.session_state.map_mode == "Frequency" else "secondary")
+            if is_freq: st.session_state.map_mode = "Frequency"
         with c2:
-            st.caption("Expanded Imaging Areas")
-            show_expanded = st.toggle("UK Expanded Polygons", value=False)
-            
-        with c3:
-            # Dynamic status metric
-            filtered_df = df[df["Insights"].isin(selected_insights)]
-            st.metric("Total Farms Tasked", f"{len(filtered_df)}")
+            is_rec = st.button("🕒 Recency Map", use_container_width=True, type="primary" if "map_mode" in st.session_state and st.session_state.map_mode == "Recency" else "secondary")
+            if is_rec: st.session_state.map_mode = "Recency"
+        
+        map_mode = st.session_state.get("map_mode", "Frequency")
 
+        # 4. Color Mapping Logic
+        def get_color(row, mode):
+            if mode == "Frequency":
+                val = row["Insights"]
+                if val == 0: return "#8B0000"
+                if val == 1: return "#FFD700"
+                if val == 2: return "#76D100"
+                if val == 3: return "#32CD32"
+                return "#008000"
+            else:
+                cat = row["Recency Category"]
+                if cat == "No Images": return "#8B0000"
+                if cat == "> 21 Days Old": return "#FFD700"
+                if cat == "10 - 21 Days Old": return "#76D100"
+                return "#32CD32"
+
+        # 5. Create the Map
+        if not filtered_df.empty:
+            avg_lat = filtered_df["Latitude"].mean()
+            avg_lon = filtered_df["Longitude"].mean()
+            m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6, control_scale=True)
+
+            # --- A. Draw Tasking Polygons ---
+            for _, p_row in poly_df.iterrows():
+                p_name = str(p_row['Polygon'])
+                is_core = p_name.startswith("Core")
+                is_expanded = p_name.startswith("Expanded")
+                
+                if (is_core and show_core) or (is_expanded and show_expanded):
+                    try:
+                        geom = shapely.wkt.loads(p_row['Geometry'])
+                        color = "#1f77b4" if is_core else "#9467bd"
+                        dash = "1" if is_core else "5, 5"
+                        coords = [[p[1], p[0]] for p in geom.exterior.coords]
+                        folium.Polygon(
+                            locations=coords, popup=p_name, tooltip=p_name,
+                            color=color, weight=2, fill=True, fill_opacity=0.1, dash_array=dash
+                        ).add_to(m)
+                    except: continue
+
+            # --- B. Draw Farm Points ---
+            for _, row in filtered_df.iterrows():
+                point_color = get_color(row, map_mode)
+                date_str = row['Recent Date'].strftime('%Y-%m-%d') if pd.notnull(row['Recent Date']) else "No Data"
+                combined_tooltip = f"Farm {row['Farm ID']} | Insights: {row['Insights']} | Last: {date_str}"
+                
+                folium.CircleMarker(
+                    location=[row["Latitude"], row["Longitude"]],
+                    radius=5.5, 
+                    color="white",
+                    weight=0.7,
+                    fill=True,
+                    fill_color=point_color,
+                    fill_opacity=0.9,
+                    popup=folium.Popup(f"<b>Farm ID:</b> {row['Farm ID']}<br><b>Insights:</b> {row['Insights']}<br><b>Latest Image:</b> {date_str}", max_width=200),
+                    tooltip=combined_tooltip
+                ).add_to(m)
+
+            # 6. Legend
+            if map_mode == "Frequency":
+                legend_title, labels = "Insights Progress", [
+                    ("#8B0000", "0 (None)"), ("#FFD700", "1 Insight"), ("#76D100", "2 Insights"),
+                    ("#32CD32", "3 Insights"), ("#008000", "4+ Insights")
+                ]
+            else:
+                legend_title, labels = "Image Recency", [
+                    ("#8B0000", "No Images"), ("#FFD700", "> 21 Days Old"),
+                    ("#76D100", "10 - 21 Days Old"), ("#32CD32", "< 10 Days (Recent)")
+                ]
+
+            legend_items = "".join([f'<i style="background: {c}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> {l}<br>' for c, l in labels])
+            legend_html = f"""
+                 <div style="position: fixed; bottom: 50px; left: 50px; width: 165px; height: auto; 
+                 background-color: rgba(30, 30, 30, 0.9); border: 1px solid #555; z-index: 9999; font-size: 11px;
+                 padding: 10px; border-radius: 8px; color: #FFFFFF; font-family: sans-serif; box-shadow: 2px 2px 10px rgba(0,0,0,0.5);">
+                 <b style="display: block; margin-bottom: 8px;">{legend_title}</b>{legend_items}</div>
+            """
+            m.get_root().html.add_child(folium.Element(legend_html))
+
+            st_folium(m, use_container_width=True, height=750)
+        else:
+            st.warning("No data matches the selected filters.")
+
+    # Data table footer
     st.divider()
-
-    # 4. Success-Oriented Color Mapping
-    def get_color(val):
-        if val == 0: return "#8B0000" 
-        if val == 1: return "#FFD700" 
-        if val == 2: return "#76D100" 
-        if val == 3: return "#32CD32" 
-        return "#008000"
-
-    # 5. Create the Map
-    if not filtered_df.empty:
-        avg_lat = filtered_df["Latitude"].mean()
-        avg_lon = filtered_df["Longitude"].mean()
-        
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=6, control_scale=True)
-
-        # --- A. Draw Tasking Polygons (Layers) ---
-        for _, p_row in poly_df.iterrows():
-            p_name = str(p_row['Polygon'])
-            is_core = p_name.startswith("Core")
-            is_expanded = p_name.startswith("Expanded")
-            
-            if (is_core and show_core) or (is_expanded and show_expanded):
-                try:
-                    geom = shapely.wkt.loads(p_row['Geometry'])
-                    color = "#1f77b4" if is_core else "#9467bd"
-                    dash = "1" if is_core else "5, 5"
-                    coords = [[p[1], p[0]] for p in geom.exterior.coords]
-                    
-                    folium.Polygon(
-                        locations=coords,
-                        popup=p_name,
-                        tooltip=p_name,
-                        color=color,
-                        weight=2,
-                        fill=True,
-                        fill_opacity=0.1,
-                        dash_array=dash
-                    ).add_to(m)
-                except:
-                    continue
-
-        # --- B. Draw Farm Points ---
-        for _, row in filtered_df.iterrows():
-            folium.CircleMarker(
-                location=[row["Latitude"], row["Longitude"]],
-                radius=4.5, 
-                color="white",
-                weight=0.5,
-                fill=True,
-                fill_color=get_color(row["Insights"]),
-                fill_opacity=0.9,
-                popup=folium.Popup(f"<b>Farm ID:</b> {row['Farm ID']}<br><b>Insights:</b> {row['Insights']}", max_width=200),
-                tooltip=f"Farm {row['Farm ID']}"
-            ).add_to(m)
-
-        # 6. Legend (Enhanced Styling)
-        legend_html = f"""
-             <div style="
-             position: fixed; 
-             bottom: 50px; left: 50px; width: 140px; height: 135px; 
-             background-color: rgba(30, 30, 30, 0.9); 
-             border: 1px solid #555; z-index: 9999; font-size: 11px;
-             padding: 10px; border-radius: 8px; color: #FFFFFF;
-             font-family: sans-serif; box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
-             ">
-             <b style="display: block; margin-bottom: 8px;">Insights Progress</b>
-             <i style="background: {get_color(0)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 0 (None)<br>
-             <i style="background: {get_color(1)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 1 Insight<br>
-             <i style="background: {get_color(2)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 2 Insights<br>
-             <i style="background: {get_color(3)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 3 Insights<br>
-             <i style="background: {get_color(4)}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> 4+ Insights
-             </div>
-        """
-        m.get_root().html.add_child(folium.Element(legend_html))
-
-        st_folium(m, use_container_width=True, height=700)
-        
-        with st.expander("📂 View Data Table"):
-            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-            
-    else:
-        st.warning("No data matches the selected filters.")
+    with st.expander("📂 View Data Table"):
+        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
