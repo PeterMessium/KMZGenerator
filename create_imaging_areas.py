@@ -49,7 +49,7 @@ def nav_button(label, tool_id, container):
 poly_expander = st.sidebar.expander("Basic KMZ Tools", expanded=True)
 nav_button("Imaging Polygon Generator", "Imaging Polygon Generator", poly_expander)
 nav_button("Duplicate KMZs", "Duplicate KMZs", poly_expander)
-nav_button("Shapefile → KMZ Converter", "Shapefile → KMZ Converter", poly_expander)
+nav_button("Converter Tools", "Converter Tools", poly_expander)
 
 # Section 2: Trial Subsections Tools
 poly_expander = st.sidebar.expander("Trial Subsections Tools", expanded=True)
@@ -303,204 +303,171 @@ if selected_tool == "Imaging Polygon Generator":
             st.error(f"Error: {e}")
 
 
-elif selected_tool == "Shapefile → KMZ Converter":
+elif selected_tool == "Converter Tools":
+    # 1. Initialize session state
+    if "sub_conv_type" not in st.session_state:
+        st.session_state.sub_conv_type = None
 
-    st.subheader("Upload Shapefile components (.shp, .shx, .dbf, .prj, .cpg)")
+    st.title("Converter Tools")
 
-    uploaded_files = st.file_uploader(
-        "Select all shapefile components",
-        type=["shp", "shx", "dbf", "prj", "cpg"],
-        accept_multiple_files=True,
-        key="tab2_upload"
-    )
-
-    # ----------------------------
-    # CRS Detection Helper
-    # ----------------------------
-
+    # 2. SHARED HELPERS
     def guess_crs(gdf):
-
-        candidates = [
-            "EPSG:4326",
-            "EPSG:3857",
-            "EPSG:27700",
-            "EPSG:2154",
-            "EPSG:32629",
-            "EPSG:32630",
-            "EPSG:32631",
-            "EPSG:32632",
-            "EPSG:32633",
-        ]
-
+        candidates = ["EPSG:4326", "EPSG:3857", "EPSG:27700", "EPSG:2154", "EPSG:32630"]
         for crs in candidates:
             try:
                 test = gdf.set_crs(crs, allow_override=True).to_crs("EPSG:4326")
-                minx, miny, maxx, maxy = test.total_bounds
-
-                if (
-                    -180 <= minx <= 180 and
-                    -90 <= miny <= 90 and
-                    -180 <= maxx <= 180 and
-                    -90 <= maxy <= 90
-                ):
-                    return crs
-            except:
-                continue
-
+                bounds = test.total_bounds
+                if -180 <= bounds[0] <= 180 and -90 <= bounds[1] <= 90: return crs
+            except: continue
         return None
 
-
-    # ----------------------------
-    # KMZ Conversion Helper
-    # ----------------------------
-
     def gdf_to_kmz(gdf, output_path):
-
         kml = simplekml.Kml()
-
+        for col in gdf.select_dtypes(include=['datetime64', 'datetime', 'datetimetz']).columns:
+            gdf[col] = gdf[col].dt.strftime('%Y-%m-%d %H:%M:%S')
         for idx, row in gdf.iterrows():
-
             geom = row.geometry
-
-            if geom is None or geom.is_empty:
-                continue
-
-            attrs = row.drop(labels="geometry").to_dict()
-            description = "<br>".join([f"<b>{k}</b>: {v}" for k, v in attrs.items()])
-
-            if geom.geom_type == "MultiPolygon":
-                polygons = [p for p in geom.geoms if not p.is_empty]
-
-            elif geom.geom_type == "Polygon":
-                polygons = [geom]
-
-            else:
-                continue
-
-            for poly in polygons:
-
-                kml.newpolygon(
-                    name=str(idx),
-                    description=description,
-                    outerboundaryis=list(poly.exterior.coords),
-                    innerboundaryis=[list(i.coords) for i in poly.interiors]
-                )
-
+            if geom is None or geom.is_empty: continue
+            desc = "<br>".join([f"<b>{k}</b>: {v}" for k, v in row.drop("geometry").to_dict().items()])
+            if geom.geom_type in ["Polygon", "MultiPolygon"]:
+                polys = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+                for p_geom in polys:
+                    p = kml.newpolygon(name=f"Feature {idx}", description=desc)
+                    p.outerboundaryis, p.innerboundaryis = list(p_geom.exterior.coords), [list(i.coords) for i in p_geom.interiors]
+            elif geom.geom_type in ["Point", "MultiPoint"]:
+                pts = [geom] if geom.geom_type == "Point" else list(geom.geoms)
+                for pt in pts: kml.newpoint(name=f"Feature {idx}", description=desc, coords=[(pt.x, pt.y)])
+            elif geom.geom_type in ["LineString", "MultiLineString"]:
+                lns = [geom] if geom.geom_type == "LineString" else list(geom.geoms)
+                for ln in lns: kml.newlinestring(name=f"Feature {idx}", description=desc, coords=list(ln.coords))
         temp_kml = output_path.replace(".kmz", ".kml")
         kml.save(temp_kml)
-
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as kmz:
             kmz.write(temp_kml, arcname="doc.kml")
-
         os.remove(temp_kml)
 
+    # 3. MODERN TILES WITH BRIGHTER SCOPED BUTTONS
+    st.markdown("""
+    <style>
+    .mod-tile {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 40px;
+        border-radius: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        transition: all 0.3s ease;
+        text-align: center;
+        margin-bottom: 20px;
+        min-height: 220px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .mod-tile:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-8px);
+        border-color: #00d4ff;
+        box-shadow: 0 15px 30px rgba(0, 212, 255, 0.15);
+    }
+    .tile-icon { font-size: 4em; margin-bottom: 20px; }
+    .tile-title { font-weight: 700; font-size: 1.4em; color: #ffffff; margin-bottom: 10px; }
+    .tile-desc { font-size: 0.9em; color: #a3a8b4; line-height: 1.5; }
 
-    if uploaded_files:
+    /* Target buttons only in main area - BRIGHTER VERSION */
+    [data-testid="stMain"] div.stButton > button {
+        background-color: rgba(255, 255, 255, 0.15) !important; /* Brighter background */
+        color: #ffffff !important; /* Pure white text */
+        border: 1px solid rgba(0, 212, 255, 0.3) !important; /* Subtle cyan border */
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease !important;
+    }
+    [data-testid="stMain"] div.stButton > button:hover {
+        background-color: rgba(0, 212, 255, 0.2) !important;
+        border-color: #00d4ff !important;
+        color: #ffffff !important;
+        box-shadow: 0 0 15px rgba(0, 212, 255, 0.3) !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-        with tempfile.TemporaryDirectory() as tmp:
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        # Icon changed to 🗺️ (Map) for Shapefiles
+        st.markdown(
+            '<div class="mod-tile"><div class="tile-icon">🗺️</div><div class="tile-title">Shapefile → KMZ</div><div class="tile-desc">Upload .shp, .shx, .dbf, and .prj clusters.</div></div>', 
+            unsafe_allow_html=True
+        )
+        # Added key="btn_select_shp" to fix the Duplicate ID error
+        if st.button("Select Shapefile", use_container_width=True, key="btn_select_shp"):
+            st.session_state.sub_conv_type = "shp"
+            
+    with c2:
+        # Icon changed to 💠 (Diamond Shape/Node) for GeoJSON
+        st.markdown(
+            '<div class="mod-tile"><div class="tile-icon">💠</div><div class="tile-title">GeoJSON → KMZ</div><div class="tile-desc">Upload standard .json or .geojson files.</div></div>', 
+            unsafe_allow_html=True
+        )
+        # Added key="btn_select_json" to fix the Duplicate ID error
+        if st.button("Select GeoJSON", use_container_width=True, key="btn_select_json"):
+            st.session_state.sub_conv_type = "json"
 
-            for f in uploaded_files:
-                with open(os.path.join(tmp, f.name), "wb") as out:
-                    out.write(f.getbuffer())
+    st.write("---")
 
-            shp_files = [f for f in uploaded_files if f.name.endswith(".shp")]
+    # 4. CONVERTER INTERFACES
+    if st.session_state.sub_conv_type == "shp":
+        st.subheader("Shapefile to KMZ")
+        uploaded = st.file_uploader("Select components", type=["shp", "shx", "dbf", "prj", "cpg"], accept_multiple_files=True, key="up_shp")
+        if uploaded:
+            with tempfile.TemporaryDirectory() as tmp:
+                for f in uploaded:
+                    with open(os.path.join(tmp, f.name), "wb") as out: out.write(f.getbuffer())
+                shp_list = [f.name for f in uploaded if f.name.endswith(".shp")]
+                if shp_list:
+                    try:
+                        gdf = gpd.read_file(os.path.join(tmp, shp_list[0]))
+                        if gdf.crs is None:
+                            guessed = guess_crs(gdf)
+                            if guessed: gdf = gdf.set_crs(guessed, allow_override=True)
+                            else: st.stop()
+                        gdf = gdf.to_crs("EPSG:4326")
+                        
+                        # Preview Map
+                        m = folium.Map(location=[gdf.unary_union.centroid.y, gdf.unary_union.centroid.x], zoom_start=12)
+                        folium.GeoJson(gdf).add_to(m)
+                        st_folium(m, width=700, height=400, key="map_shp")
 
-            if len(shp_files) != 1:
-                st.error("Please upload exactly one .shp file.")
-                st.stop()
+                        if st.button("Generate KMZ File"):
+                            out_p = os.path.join(tmp, "out.kmz")
+                            gdf_to_kmz(gdf, out_p)
+                            with open(out_p, "rb") as f:
+                                st.download_button("Download & Save KMZ", f, file_name="shapefile_export.kmz")
+                    except Exception as e: st.error(f"Error: {e}")
 
-            shp_path = os.path.join(tmp, shp_files[0].name)
-
-            try:
-                gdf = gpd.read_file(shp_path)
-            except Exception as e:
-                st.error(f"Error reading shapefile: {e}")
-                st.stop()
-
-            # ----------------------------
-            # Handle CRS
-            # ----------------------------
-
-            if gdf.crs is None:
-
-                st.warning("No CRS detected. Attempting automatic detection...")
-
-                guessed = guess_crs(gdf)
-
-                if guessed:
-                    st.success(f"Detected CRS: {guessed}")
-                    gdf = gdf.set_crs(guessed, allow_override=True)
-
-                else:
-                    st.error("Could not automatically determine CRS.")
-
-                    manual_crs = st.text_input(
-                        "Enter CRS manually (example: EPSG:27700)"
-                    )
-
-                    if manual_crs:
-                        try:
-                            gdf = gdf.set_crs(manual_crs, allow_override=True)
-                        except:
-                            st.error("Invalid CRS.")
-                            st.stop()
-                    else:
-                        st.stop()
-
-            # ----------------------------
-            # Convert to WGS84
-            # ----------------------------
-
-            try:
-                gdf = gdf.to_crs("EPSG:4326")
-            except Exception as e:
-                st.error(f"CRS conversion failed: {e}")
-                st.stop()
-
-            # ----------------------------
-            # Preview Map
-            # ----------------------------
-
-            st.subheader("Geometry Preview")
-
-            centroid = gdf.geometry.centroid.iloc[0]
-
-            m = folium.Map(
-                location=[centroid.y, centroid.x],
-                zoom_start=15
-            )
-
-            folium.GeoJson(gdf).add_to(m)
-
-            st_folium(m, width="100%", height=500)
-
-            # ----------------------------
-            # Export KMZ
-            # ----------------------------
-
-            if st.button("Convert to KMZ", key="tab2_convert"):
-
-                kmz_name = os.path.splitext(shp_files[0].name)[0] + ".kmz"
-                kmz_path = os.path.join(tmp, kmz_name)
-
+    elif st.session_state.sub_conv_type == "json":
+        st.subheader("GeoJSON to KMZ")
+        uploaded = st.file_uploader("Select file", type=["json", "geojson"], key="up_json")
+        if uploaded:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = os.path.join(tmp, "data.json")
+                with open(p, "wb") as out: out.write(uploaded.getbuffer())
                 try:
+                    gdf = gpd.read_file(p)
+                    gdf = gdf.to_crs("EPSG:4326") if gdf.crs else gdf.set_crs("EPSG:4326")
+                    
+                    # Preview Map
+                    m = folium.Map(location=[gdf.unary_union.centroid.y, gdf.unary_union.centroid.x], zoom_start=12)
+                    folium.GeoJson(gdf).add_to(m)
+                    st_folium(m, width=700, height=400, key="map_json")
 
-                    gdf_to_kmz(gdf, kmz_path)
+                    if st.button("Generate KMZ File"):
+                        out_p = os.path.join(tmp, "out.kmz")
+                        gdf_to_kmz(gdf, out_p)
+                        with open(out_p, "rb") as f:
+                            st.download_button("Download & Save KMZ", f, file_name="geojson_export.kmz")
+                except Exception as e: st.error(f"Error: {e}")
 
-                    with open(kmz_path, "rb") as f:
-                        st.download_button(
-                            "Download KMZ",
-                            f,
-                            file_name=kmz_name,
-                            mime="application/vnd.google-earth.kmz"
-                        )
 
-                    st.success("Shapefile converted successfully!")
-
-                except Exception as e:
-                    st.error(f"KMZ conversion failed: {e}")
-
-  
 elif selected_tool == "OC Tasking AOI Generator":
 
 
