@@ -1471,25 +1471,48 @@ elif selected_tool == "WS Tasking Helper":
             export_structure[drag_id] = []
 
             for p_label, p_group in drag_group.groupby("Pass Group", sort=False):
-                # Target Icon for Passes
-                st.subheader(f"🎯 {p_label}")
+                # Header and Filter Toggles
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.subheader(f"🎯 {p_label}")
+                with col2:
+                    hide_ona = st.toggle("Hide High ONA", key=f"ona_{drag_id}_{p_label}", help="Hide ONA > 13 or < -13")
+                with col3:
+                    hide_cloud = st.toggle("Hide High Cloud", key=f"cloud_{drag_id}_{p_label}", help="Hide Cloud > 40%")
                 
+                # Apply Filters
                 display_df = p_group.copy()
-                display_df["Cloud Risk"] = display_df["Cloud Coverage"].apply(
-                    lambda v: f"{'🟢' if v < 20 else '🟡' if v <= 80 else '🔴'} {'█' * int(v/10)}{'░' * (10-int(v/10))} {v}%"
-                )
+                if hide_ona:
+                    display_df = display_df[(display_df["ONA"] <= 13) & (display_df["ONA"] >= -13)]
+                if hide_cloud:
+                    display_df = display_df[display_df["Cloud Coverage"] <= 40]
                 
                 # Dynamic height to force full table expansion
                 row_height, header_height = 35, 40
                 calc_h = (len(display_df) * row_height) + header_height + 2
 
+                # Define columns for proper sorting and visualization
+                column_configuration = {
+                    "Select": st.column_config.CheckboxColumn(required=True),
+                    "Cloud Coverage": st.column_config.ProgressColumn(
+                        "Cloud Risk",
+                        help="Satellite cloud forecast percentage",
+                        format="%f%%",
+                        min_value=0,
+                        max_value=100,
+                    ),
+                    "Area Coverage": st.column_config.NumberColumn(format="%.2f%%"),
+                    "ONA": st.column_config.NumberColumn(format="%.2f"),
+                }
+
                 edited_df = st.data_editor(
-                    display_df[["Select", "Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]],
+                    display_df[["Select", "Site Name", "Orbital Direction", "Area Coverage", "Cloud Coverage", "ONA"]],
                     key=f"editor_{drag_id}_{p_label}",
                     hide_index=True, 
                     use_container_width=True, 
                     height=calc_h,
-                    disabled=["Site Name", "Orbital Direction", "Area Coverage", "Cloud Risk", "ONA"]
+                    column_config=column_configuration,
+                    disabled=["Site Name", "Orbital Direction", "Area Coverage", "Cloud Coverage", "ONA"]
                 )
 
                 selected_rows = edited_df[edited_df["Select"] == True]
@@ -1515,7 +1538,6 @@ elif selected_tool == "WS Tasking Helper":
             type="primary",
             use_container_width=True
         )
-
 
 elif selected_tool == "Satellite Insights Map":
     # 1. UI Refresh via CSS - Using your professional wide-screen styling
