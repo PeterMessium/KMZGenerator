@@ -1539,18 +1539,15 @@ elif selected_tool == "WS Tasking Helper":
             use_container_width=True
         )
 
-elif selected_tool == "Satellite Insights Map":
-    # 1. UI Refresh via CSS - Using your professional wide-screen styling
+if selected_tool == "Satellite Insights Map":
+    # 1. UI Refresh via CSS
     st.markdown("""
         <style>
-            /* Global Page Width */
             .block-container {
                 max-width: 98% !important;
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
             }
-            
-            /* Professional Header Offset */
             .map-header {
                 font-size: 32px;
                 font-weight: 700;
@@ -1559,18 +1556,19 @@ elif selected_tool == "Satellite Insights Map":
                 align-items: center;
                 gap: 12px;
             }
-
-            /* Fix Multiselect wrapping and spacing */
             .stMultiSelect div[role="listbox"] {
                 overflow-wrap: normal !important;
             }
             .stMultiSelect span {
                 font-size: 13px !important;
             }
-            
-            /* Clean up the sidebar filter labels */
             [data-testid="stVerticalBlock"] > div:has(div.stMultiSelect) {
                 margin-bottom: -10px;
+            }
+            /* Styling for the stats row below the map */
+            .stats-row-container {
+                padding-top: 20px;
+                padding-bottom: 10px;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -1591,18 +1589,30 @@ elif selected_tool == "Satellite Insights Map":
             return "< 10 Days (Recent)"
         
         df["Recency Category"] = df["Recent Date"].apply(categorize_recency)
+        
         poly_df = pd.read_csv("polygons.csv")
         poly_df.columns = poly_df.columns.str.strip()
     except Exception as e:
         st.error(f"Error loading CSV files: {e}")
         st.stop()
 
-    # 3. Layout: Map and Sidebar with improved Ratios
+    # 3. Sidebar for Filters ONLY
     main_col, side_panel = st.columns([4, 1], gap="large")
 
     with side_panel:
         st.write("### Filters")
         
+        # ISO Filter
+        if "ISO" in df.columns:
+            iso_options = sorted(df["ISO"].dropna().unique().tolist())
+            selected_iso = st.multiselect(
+                "Country (ISO):",
+                options=iso_options,
+                default=iso_options
+            )
+        else:
+            selected_iso = []
+
         selected_insights = st.multiselect(
             "Insights Count:",
             options=sorted(df["Insights"].unique()),
@@ -1616,19 +1626,21 @@ elif selected_tool == "Satellite Insights Map":
             default=recency_options
         )
         
+        # Apply Filter Logic
+        mask = (
+            (df["Insights"].isin(selected_insights)) & 
+            (df["Recency Category"].isin(selected_recency))
+        )
+        if selected_iso:
+            mask = mask & (df["ISO"].isin(selected_iso))
+            
+        filtered_df = df[mask]
+
         st.markdown("---")
         st.write("### Layers")
         show_core = st.toggle("UK Core Polygons", value=False)
         show_expanded = st.toggle("UK Expanded Polygons", value=False)
         
-        # Filter Logic
-        filtered_df = df[
-            (df["Insights"].isin(selected_insights)) & 
-            (df["Recency Category"].isin(selected_recency))
-        ]
-        
-        st.markdown("---")
-        st.metric("Total Farms Displayed", len(filtered_df))
         st.caption(f"Current Date: {datetime.now().strftime('%Y-%m-%d')}")
 
     with main_col:
@@ -1643,23 +1655,7 @@ elif selected_tool == "Satellite Insights Map":
         
         map_mode = st.session_state.get("map_mode", "Frequency")
 
-        # 4. Color Mapping Logic
-        def get_color(row, mode):
-            if mode == "Frequency":
-                val = row["Insights"]
-                if val == 0: return "#8B0000"
-                if val == 1: return "#FFD700"
-                if val == 2: return "#76D100"
-                if val == 3: return "#32CD32"
-                return "#008000"
-            else:
-                cat = row["Recency Category"]
-                if cat == "No Images": return "#8B0000"
-                if cat == "> 21 Days Old": return "#FFD700"
-                if cat == "10 - 21 Days Old": return "#76D100"
-                return "#32CD32"
-
-        # 5. Create the Map
+        # 4. Create the Map
         if not filtered_df.empty:
             avg_lat = filtered_df["Latitude"].mean()
             avg_lon = filtered_df["Longitude"].mean()
@@ -1684,6 +1680,21 @@ elif selected_tool == "Satellite Insights Map":
                     except: continue
 
             # --- B. Draw Farm Points ---
+            def get_color(row, mode):
+                if mode == "Frequency":
+                    val = row["Insights"]
+                    if val == 0: return "#8B0000"
+                    if val == 1: return "#FFD700"
+                    if val == 2: return "#76D100"
+                    if val == 3: return "#32CD32"
+                    return "#008000"
+                else:
+                    cat = row["Recency Category"]
+                    if cat == "No Images": return "#8B0000"
+                    if cat == "> 21 Days Old": return "#FFD700"
+                    if cat == "10 - 21 Days Old": return "#76D100"
+                    return "#32CD32"
+
             for _, row in filtered_df.iterrows():
                 point_color = get_color(row, map_mode)
                 date_str = row['Recent Date'].strftime('%Y-%m-%d') if pd.notnull(row['Recent Date']) else "No Data"
@@ -1726,7 +1737,51 @@ elif selected_tool == "Satellite Insights Map":
         else:
             st.warning("No data matches the selected filters.")
 
+        # --- 7. NEW: STATS SECTION BELOW MAP ---
+        st.write("### 📊 Stats for Farms Currently Displayed")
+        if not filtered_df.empty:
+            # Data Calculations
+            total_farms = len(filtered_df)
+            avg_images = filtered_df["Insights"].mean()
+            
+            max_img_val = filtered_df["Insights"].max()
+            max_img_ids = filtered_df[filtered_df["Insights"] == max_img_val]["Farm ID"].tolist()
+            
+            min_img_val = filtered_df["Insights"].min()
+            min_img_ids = filtered_df[filtered_df["Insights"] == min_img_val]["Farm ID"].tolist()
+            
+            dated_df = filtered_df.dropna(subset=["Recent Date"])
+            if not dated_df.empty:
+                mrd = dated_df["Recent Date"].max()
+                mrd_ids = dated_df[dated_df["Recent Date"] == mrd]["Farm ID"].tolist()
+                lrd = dated_df["Recent Date"].min()
+                lrd_ids = dated_df[dated_df["Recent Date"] == lrd]["Farm ID"].tolist()
+                
+                mrd_str, lrd_str = mrd.strftime('%d-%m-%Y'), lrd.strftime('%d-%m-%Y')
+            else:
+                mrd_str = lrd_str = "N/A"
+                mrd_ids = lrd_ids = []
+
+            # 5-Column Stats Ribbon
+            s1, s2, s3, s4, s5 = st.columns(5)
+            
+            with s1:
+                st.metric("Total Farms Displayed", total_farms)
+            with s2:
+                st.metric("Avg Images", f"{avg_images:.2f}")
+            with s3:
+                st.metric("Max Images", f"{max_img_val}", 
+                          help=f"Farm IDs: {', '.join(map(str, max_img_ids[:100]))}")
+            with s4:
+                st.metric("Min Images", f"{min_img_val}", 
+                          help=f"Farm IDs: {', '.join(map(str, min_img_ids[:100]))}")
+            with s5:
+                st.metric("Newest Image", mrd_str)
+
+        else:
+            st.info("Apply filters to view summary statistics.")
+
     # Data table footer
     st.divider()
-    with st.expander("📂 View Data Table"):
+    with st.expander("📂 View Full Data Table"):
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
