@@ -21,6 +21,7 @@ import pandas as pd
 from datetime import datetime
 import sys
 import shapely.wkt # Ensure this is at the top of your file
+import pyogrio
 
 # ----------------------------
 # APP CONFIG
@@ -346,9 +347,17 @@ elif selected_tool == "Converter Tools":
             kmz.write(temp_kml, arcname="doc.kml")
         os.remove(temp_kml)
 
-    # 3. MODERN TILES WITH BRIGHTER SCOPED BUTTONS
+    # 3. FULL WIDTH & MODERN TILES CSS
     st.markdown("""
     <style>
+    /* Full Width Override */
+    .block-container {
+        max-width: 98% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-bottom: 50px !important; 
+    }
+
     .mod-tile {
         background: rgba(255, 255, 255, 0.05);
         padding: 40px;
@@ -372,11 +381,10 @@ elif selected_tool == "Converter Tools":
     .tile-title { font-weight: 700; font-size: 1.4em; color: #ffffff; margin-bottom: 10px; }
     .tile-desc { font-size: 0.9em; color: #a3a8b4; line-height: 1.5; }
 
-    /* Target buttons only in main area - BRIGHTER VERSION */
     [data-testid="stMain"] div.stButton > button {
-        background-color: rgba(255, 255, 255, 0.15) !important; /* Brighter background */
-        color: #ffffff !important; /* Pure white text */
-        border: 1px solid rgba(0, 212, 255, 0.3) !important; /* Subtle cyan border */
+        background-color: rgba(255, 255, 255, 0.15) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(0, 212, 255, 0.3) !important;
         border-radius: 12px !important;
         font-weight: 600 !important;
         transition: all 0.2s ease !important;
@@ -390,27 +398,31 @@ elif selected_tool == "Converter Tools":
     </style>
     """, unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     
     with c1:
-        # Icon changed to 🗺️ (Map) for Shapefiles
         st.markdown(
             '<div class="mod-tile"><div class="tile-icon">🗺️</div><div class="tile-title">Shapefile → KMZ</div><div class="tile-desc">Upload .shp, .shx, .dbf, and .prj clusters.</div></div>', 
             unsafe_allow_html=True
         )
-        # Added key="btn_select_shp" to fix the Duplicate ID error
         if st.button("Select Shapefile", use_container_width=True, key="btn_select_shp"):
             st.session_state.sub_conv_type = "shp"
             
     with c2:
-        # Icon changed to 💠 (Diamond Shape/Node) for GeoJSON
         st.markdown(
             '<div class="mod-tile"><div class="tile-icon">💠</div><div class="tile-title">GeoJSON → KMZ</div><div class="tile-desc">Upload standard .json or .geojson files.</div></div>', 
             unsafe_allow_html=True
         )
-        # Added key="btn_select_json" to fix the Duplicate ID error
         if st.button("Select GeoJSON", use_container_width=True, key="btn_select_json"):
             st.session_state.sub_conv_type = "json"
+
+    with c3:
+        st.markdown(
+            '<div class="mod-tile"><div class="tile-icon">📍</div><div class="tile-title">KML → KMZ</div><div class="tile-desc">Convert uncompressed KML files to KMZ format.</div></div>', 
+            unsafe_allow_html=True
+        )
+        if st.button("Select KML", use_container_width=True, key="btn_select_kml"):
+            st.session_state.sub_conv_type = "kml"
 
     st.write("---")
 
@@ -432,10 +444,9 @@ elif selected_tool == "Converter Tools":
                             else: st.stop()
                         gdf = gdf.to_crs("EPSG:4326")
                         
-                        # Preview Map
                         m = folium.Map(location=[gdf.unary_union.centroid.y, gdf.unary_union.centroid.x], zoom_start=12)
                         folium.GeoJson(gdf).add_to(m)
-                        st_folium(m, width=700, height=400, key="map_shp")
+                        st_folium(m, width=None, height=500, key="map_shp", use_container_width=True)
 
                         if st.button("Generate KMZ File"):
                             out_p = os.path.join(tmp, "out.kmz")
@@ -455,10 +466,9 @@ elif selected_tool == "Converter Tools":
                     gdf = gpd.read_file(p)
                     gdf = gdf.to_crs("EPSG:4326") if gdf.crs else gdf.set_crs("EPSG:4326")
                     
-                    # Preview Map
                     m = folium.Map(location=[gdf.unary_union.centroid.y, gdf.unary_union.centroid.x], zoom_start=12)
                     folium.GeoJson(gdf).add_to(m)
-                    st_folium(m, width=700, height=400, key="map_json")
+                    st_folium(m, width=None, height=500, key="map_json", use_container_width=True)
 
                     if st.button("Generate KMZ File"):
                         out_p = os.path.join(tmp, "out.kmz")
@@ -466,6 +476,30 @@ elif selected_tool == "Converter Tools":
                         with open(out_p, "rb") as f:
                             st.download_button("Download & Save KMZ", f, file_name="geojson_export.kmz")
                 except Exception as e: st.error(f"Error: {e}")
+
+    elif st.session_state.sub_conv_type == "kml":
+        st.subheader("KML to KMZ")
+        uploaded = st.file_uploader("Select KML file", type=["kml"], key="up_kml")
+        if uploaded:
+            with tempfile.TemporaryDirectory() as tmp:
+                p = os.path.join(tmp, "data.kml")
+                with open(p, "wb") as out: out.write(uploaded.getbuffer())
+                try:
+                    # Using pyogrio engine to avoid fiona driver issues
+                    gdf = gpd.read_file(p, engine="pyogrio")
+                    gdf = gdf.to_crs("EPSG:4326") if gdf.crs else gdf.set_crs("EPSG:4326")
+                    
+                    m = folium.Map(location=[gdf.unary_union.centroid.y, gdf.unary_union.centroid.x], zoom_start=12)
+                    folium.GeoJson(gdf).add_to(m)
+                    st_folium(m, width=None, height=500, key="map_kml", use_container_width=True)
+
+                    if st.button("Generate KMZ File"):
+                        out_p = os.path.join(tmp, "out.kmz")
+                        gdf_to_kmz(gdf, out_p)
+                        with open(out_p, "rb") as f:
+                            st.download_button("Download & Save KMZ", f, file_name="kml_converted.kmz")
+                except Exception as e: 
+                    st.error(f"Error: {e}. Ensure 'pyogrio' is installed via pip.")
 
 
 elif selected_tool == "OC Tasking AOI Generator":
