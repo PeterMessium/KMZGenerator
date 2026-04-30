@@ -34,7 +34,7 @@ if 'selected_tool' not in st.session_state:
 # SIDEBAR NAVIGATION
 # ---------------------------------------------------------
 
-st.sidebar.header("Operations Team Tooling")
+st.sidebar.header("Operations Tooling")
 
 # Helper function now takes 'container' as an argument
 def nav_button(label, tool_id, container):
