@@ -10,4 +10,3 @@ folium
 streamlit-folium
 fiona
 branca
-html
