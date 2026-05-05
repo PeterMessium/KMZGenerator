@@ -22,6 +22,7 @@ from datetime import datetime
 import sys
 import shapely.wkt # Ensure this is at the top of your file
 import pyogrio
+import html
 
 # ----------------------------
 # APP CONFIG
@@ -1244,17 +1245,25 @@ elif selected_tool == "Repeated Strip Generator":
                 folium.GeoJson(row.geometry, style_function=lambda x, c=color: {'color': c, 'fillOpacity': 0.4, 'weight': 1}, tooltip=tooltip_name).add_to(m)
             st_folium(m, width="100%", height=550, key="rs_map_preview")
 
-        # --- 7. EXPORT ---
+# --- 7. EXPORT ---
         st.divider()
         if st.button("Generate KMZ", use_container_width=True, type="primary"):
+            import html
             kml = simplekml.Kml()
+            
+            # This is crucial: it prevents the library from re-escaping 
+            # characters we have already made XML-safe.
+            kml.parsetypes = False 
+
+            # Create a safe version of the field name
+            safe_field_name = html.escape(st.session_state.tab7_field_name)
             
             # 1. Field Boundary
             if field_bg_gdf is not None:
                 for _, f_row in field_bg_gdf.iterrows():
                     f_polys = [f_row.geometry] if f_row.geometry.geom_type == 'Polygon' else list(f_row.geometry.geoms)
                     for p in f_polys:
-                        pol = kml.newpolygon(name=f"{st.session_state.tab7_field_name}")
+                        pol = kml.newpolygon(name=safe_field_name)
                         pol.outerboundaryis = list(p.exterior.coords)
                         pol.style.polystyle.color = simplekml.Color.changealphaint(20, simplekml.Color.red)
                         pol.style.linestyle.color = simplekml.Color.red
@@ -1269,7 +1278,7 @@ elif selected_tool == "Repeated Strip Generator":
                 group_gdf = export_gdf[(export_gdf["ExportGroup"] == group) & (export_gdf["type"] == "strip")]
                 if not group_gdf.empty:
                     combined_geom = group_gdf.geometry.unary_union
-                    pol_geom = kml.newmultigeometry(name=group)
+                    pol_geom = kml.newmultigeometry(name=html.escape(group))
                     geoms = [combined_geom] if combined_geom.geom_type == 'Polygon' else list(combined_geom.geoms)
                     k_clr = hex_to_kml_color(st.session_state.rs_group_colors.get(group, "#FFFFFF"))
                     for g in geoms:
@@ -1278,13 +1287,13 @@ elif selected_tool == "Repeated Strip Generator":
                         p.style.polystyle.color = k_clr
                         p.style.linestyle.color = k_clr
                     pol_geom.extendeddata.newdata("is_field_section", "True")
-                    pol_geom.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+                    pol_geom.extendeddata.newdata("parent_field_name", safe_field_name)
 
             # 3. Rest of Field
             rest_row = export_gdf[export_gdf["type"] == "rest"]
             if not rest_row.empty:
                 row = rest_row.iloc[0]
-                rest_kml_obj = kml.newmultigeometry(name=st.session_state.rs_rest_name)
+                rest_kml_obj = kml.newmultigeometry(name=html.escape(st.session_state.rs_rest_name))
                 rest_clr = hex_to_kml_color(st.session_state.rs_group_colors.get("Rest of Field", "#808080"), opacity="60")
                 geoms = [row.geometry] if row.geometry.geom_type == 'Polygon' else list(row.geometry.geoms)
                 for g in geoms:
@@ -1293,19 +1302,22 @@ elif selected_tool == "Repeated Strip Generator":
                     p.style.polystyle.color = rest_clr
                     p.style.linestyle.color = rest_clr
                 rest_kml_obj.extendeddata.newdata("is_field_section", "True")
-                rest_kml_obj.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+                rest_kml_obj.extendeddata.newdata("parent_field_name", safe_field_name)
 
             # 4. Ungrouped Strips
             ungrouped = export_gdf[(export_gdf["ExportGroup"] == "None") & (export_gdf["type"] == "strip")]
             for _, row in ungrouped.iterrows():
-                p = kml.newpolygon(name=row["Name"], outerboundaryis=list(row.geometry.exterior.coords))
+                p = kml.newpolygon(name=html.escape(row["Name"]), outerboundaryis=list(row.geometry.exterior.coords))
                 p.style.polystyle.color = hex_to_kml_color("#808080", opacity="40")
                 p.extendeddata.newdata("is_field_section", "True")
-                p.extendeddata.newdata("parent_field_name", st.session_state.tab7_field_name)
+                p.extendeddata.newdata("parent_field_name", safe_field_name)
 
             kmz_out = f"{st.session_state.field_name}_Trial_Strips.kmz"
             with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp:
-                kml.savekmz(tmp.name)
+                # format=False avoids the Python crash by skipping minidom
+                # html.escape + parsetypes=False ensures valid XML without double-escaping
+                kml.savekmz(tmp.name, format=False)
+                
                 with open(tmp.name, "rb") as f:
                     st.download_button("Download KMZ", data=f, file_name=kmz_out, use_container_width=True)
                     
