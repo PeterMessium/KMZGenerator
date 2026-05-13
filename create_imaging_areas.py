@@ -1697,15 +1697,16 @@ if selected_tool == "Satellite Insights Map":
                 if mode == "Frequency":
                     val = row["Insights"]
                     if val == 0: return "#8B0000"
-                    if val == 1: return "#FFD700"
-                    if val == 2: return "#76D100"
-                    if val == 3: return "#32CD32"
+                    if val == 1: return "#E37600"
+                    if val == 2: return "#FFD700"
+                    if val == 3: return "#A8FFA8"
+                    if val == 4: return "#32CD32"
                     return "#008000"
                 else:
                     cat = row["Recency Category"]
                     if cat == "No Images": return "#8B0000"
-                    if cat == "> 21 Days Old": return "#FFD700"
-                    if cat == "10 - 21 Days Old": return "#76D100"
+                    if cat == "> 21 Days Old": return "#E37600"
+                    if cat == "10 - 21 Days Old": return "#FFD700"
                     return "#32CD32"
 
             for _, row in filtered_df.iterrows():
@@ -1728,13 +1729,13 @@ if selected_tool == "Satellite Insights Map":
             # 6. Legend
             if map_mode == "Frequency":
                 legend_title, labels = "Insights Progress", [
-                    ("#8B0000", "0 (None)"), ("#FFD700", "1 Insight"), ("#76D100", "2 Insights"),
-                    ("#32CD32", "3 Insights"), ("#008000", "4+ Insights")
+                    ("#8B0000", "0 (None)"), ("#E37600", "1 Insight"), ("#FFD700", "2 Insights"),
+                    ("#A8FFA8", "3 Insights"), ("#32CD32", "4 Insights"), ("#008000", "5+ Insights")
                 ]
             else:
                 legend_title, labels = "Image Recency", [
-                    ("#8B0000", "No Images"), ("#FFD700", "> 21 Days Old"),
-                    ("#76D100", "10 - 21 Days Old"), ("#32CD32", "< 10 Days (Recent)")
+                    ("#8B0000", "No Images"), ("#E37600", "> 21 Days Old"),
+                    ("#FFD700", "10 - 21 Days Old"), ("#32CD32", "< 10 Days (Recent)")
                 ]
 
             legend_items = "".join([f'<i style="background: {c}; width: 10px; height: 10px; float: left; margin-right: 10px; border-radius: 50%;"></i> {l}<br>' for c, l in labels])
